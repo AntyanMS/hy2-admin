@@ -48,6 +48,22 @@
 
 ## Быстрый старт
 
+Если вам нужен только скрипт установки **чистой Hysteria2 по вашей инструкции**, смотрите:
+
+- `install_hysteria2.sh`
+- `HYSTERIA2_INSTALL.md`
+
+Быстрый запуск:
+
+```bash
+chmod +x install_hysteria2.sh
+./install_hysteria2.sh --interactive
+# или
+./install_hysteria2.sh --auto --domain your.domain.com --email you@example.com
+```
+
+---
+
 ### 1) Подготовка
 
 ```bash
