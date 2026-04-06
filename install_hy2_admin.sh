@@ -138,6 +138,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -321,12 +322,25 @@ def infer_server_values(cfg: dict) -> tuple[str, int, str]:
     return host, port, sni
 
 
-def make_client_url(username: str, password: str, host: str, port: int, sni: str) -> str:
+def make_client_url(
+    username: str,
+    password: str,
+    host: str,
+    port: int,
+    sni: str,
+    speed_up_mbps: float | None = None,
+    speed_down_mbps: float | None = None,
+) -> str:
     user_enc = quote(username, safe="")
     pass_enc = quote(password, safe="")
-    query = f"sni={quote(sni, safe='')}"
+    query_parts = [f"sni={quote(sni, safe='')}"]
     if INSECURE:
-        query += "&insecure=1"
+        query_parts.append("insecure=1")
+    if isinstance(speed_up_mbps, (int, float)) and float(speed_up_mbps) > 0:
+        query_parts.append(f"upmbps={float(speed_up_mbps):g}")
+    if isinstance(speed_down_mbps, (int, float)) and float(speed_down_mbps) > 0:
+        query_parts.append(f"downmbps={float(speed_down_mbps):g}")
+    query = "&".join(query_parts)
     return f"hysteria2://{user_enc}:{pass_enc}@{host}:{port}/?{query}#{quote(username, safe='')}"
 
 
@@ -623,6 +637,51 @@ def parse_int_or_none(value: str) -> int | None:
     return parsed
 
 
+def parse_positive_mbps(value: str, field_name: str) -> float:
+    text = (value or "").strip()
+    if not text:
+        raise ValueError(f"Поле '{field_name}' обязательно")
+    parsed = float(text)
+    if parsed <= 0:
+        raise ValueError(f"Поле '{field_name}' должно быть больше 0")
+    return parsed
+
+
+def bandwidth_to_mbps(value) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value) if float(value) > 0 else None
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    m = re.match(r"^([0-9]+(?:\.[0-9]+)?)\s*(gbps|mbps|kbps)?$", text)
+    if not m:
+        return None
+    num = float(m.group(1))
+    unit = (m.group(2) or "mbps").lower()
+    if unit == "gbps":
+        return num * 1000.0
+    if unit == "kbps":
+        return num / 1000.0
+    return num
+
+
+def read_bandwidth_settings(cfg: dict | None = None) -> dict:
+    cfg = cfg or load_hy2_config()
+    bw = cfg.get("bandwidth")
+    if not isinstance(bw, dict):
+        return {"up_mbps": "", "down_mbps": "", "up_raw": "", "down_raw": ""}
+    up_raw = str(bw.get("up", "")).strip()
+    down_raw = str(bw.get("down", "")).strip()
+    up_mbps = bandwidth_to_mbps(up_raw)
+    down_mbps = bandwidth_to_mbps(down_raw)
+    return {
+        "up_mbps": f"{up_mbps:g}" if up_mbps is not None else "",
+        "down_mbps": f"{down_mbps:g}" if down_mbps is not None else "",
+        "up_raw": up_raw,
+        "down_raw": down_raw,
+    }
+
+
 def parse_date_to_utc_end(date_text: str) -> datetime | None:
     text = (date_text or "").strip()
     if not text:
@@ -648,7 +707,15 @@ def iso_to_dt(value: str) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
-def apply_limits_to_users(usernames: list[str], traffic_limit_gb: float | None, duration_days: int | None, expires_at: datetime | None) -> None:
+def apply_limits_to_users(
+    usernames: list[str],
+    traffic_limit_gb: float | None,
+    duration_days: int | None,
+    expires_at: datetime | None,
+    speed_up_mbps: float | None,
+    speed_down_mbps: float | None,
+    max_connections: int | None,
+) -> None:
     meta = load_user_meta()
     users = meta["users"]
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -672,18 +739,46 @@ def apply_limits_to_users(usernames: list[str], traffic_limit_gb: float | None, 
             entry.pop("expires_at", None)
         else:
             entry["expires_at"] = expires_at.isoformat()
+        if speed_up_mbps is None:
+            entry.pop("speed_up_mbps", None)
+        else:
+            entry["speed_up_mbps"] = round(float(speed_up_mbps), 2)
+        if speed_down_mbps is None:
+            entry.pop("speed_down_mbps", None)
+        else:
+            entry["speed_down_mbps"] = round(float(speed_down_mbps), 2)
+        if max_connections is None:
+            entry.pop("max_connections", None)
+        else:
+            entry["max_connections"] = int(max_connections)
         users[username] = entry
     save_user_meta(meta)
 
 
-def update_single_user_limits(username: str, traffic_limit_gb: float | None, duration_days: int | None, expires_at: datetime | None) -> None:
+def update_single_user_limits(
+    username: str,
+    traffic_limit_gb: float | None,
+    duration_days: int | None,
+    expires_at: datetime | None,
+    speed_up_mbps: float | None,
+    speed_down_mbps: float | None,
+    max_connections: int | None,
+) -> None:
     cfg = load_hy2_config()
     up = cfg["auth"]["userpass"]
     state = load_user_state()
     disabled = state["disabled"]
     if username not in up and username not in disabled:
         raise ValueError("Пользователь не найден")
-    apply_limits_to_users([username], traffic_limit_gb, duration_days, expires_at)
+    apply_limits_to_users(
+        [username],
+        traffic_limit_gb,
+        duration_days,
+        expires_at,
+        speed_up_mbps,
+        speed_down_mbps,
+        max_connections,
+    )
 
 
 def remove_users_from_meta(usernames: list[str]) -> None:
@@ -720,6 +815,12 @@ def evaluate_limit_reason(username: str, stats_key: str, meta_users: dict, stats
         usage = ((stats.get("users") or {}).get(stats_key) or {}).get("total", 0)
         if int(usage) >= traffic_limit_bytes:
             return "Достигнут лимит трафика"
+
+    max_connections = info.get("max_connections")
+    if isinstance(max_connections, int) and max_connections > 0 and stats.get("enabled"):
+        online_count = int(((stats.get("users") or {}).get(stats_key) or {}).get("online_count", 0) or 0)
+        if online_count > max_connections:
+            return f"Превышен лимит подключений ({online_count}/{max_connections})"
 
     return ""
 
@@ -829,12 +930,23 @@ def build_users_view() -> tuple[list[dict], list[dict], dict]:
         traffic_limit_gb = info.get("traffic_limit_gb")
         duration_days = info.get("duration_days")
         expires_at = str(info.get("expires_at", ""))
+        speed_up_mbps = info.get("speed_up_mbps")
+        speed_down_mbps = info.get("speed_down_mbps")
+        max_connections = info.get("max_connections")
         remaining_h, usage_percent = calc_limit_view(t["total"], traffic_limit_bytes)
         active.append(
             {
                 "username": username,
                 "is_protected": username in protected,
-                "url": make_client_url(username, str(password), host, port, sni),
+                "url": make_client_url(
+                    username,
+                    str(password),
+                    host,
+                    port,
+                    sni,
+                    speed_up_mbps=speed_up_mbps if isinstance(speed_up_mbps, (int, float)) else None,
+                    speed_down_mbps=speed_down_mbps if isinstance(speed_down_mbps, (int, float)) else None,
+                ),
                 "rx": t["rx"],
                 "tx": t["tx"],
                 "total": t["total"],
@@ -852,6 +964,9 @@ def build_users_view() -> tuple[list[dict], list[dict], dict]:
                 "traffic_usage_percent": usage_percent,
                 "duration_days": duration_days if isinstance(duration_days, int) and duration_days > 0 else None,
                 "expires_at": expires_at,
+                "speed_up_mbps": speed_up_mbps if isinstance(speed_up_mbps, (int, float)) and speed_up_mbps > 0 else None,
+                "speed_down_mbps": speed_down_mbps if isinstance(speed_down_mbps, (int, float)) and speed_down_mbps > 0 else None,
+                "max_connections": max_connections if isinstance(max_connections, int) and max_connections > 0 else None,
                 "is_disabled": False,
             }
         )
@@ -883,6 +998,9 @@ def build_users_view() -> tuple[list[dict], list[dict], dict]:
         traffic_limit_gb = info.get("traffic_limit_gb")
         duration_days = info.get("duration_days")
         expires_at = str(info.get("expires_at", ""))
+        speed_up_mbps = info.get("speed_up_mbps")
+        speed_down_mbps = info.get("speed_down_mbps")
+        max_connections = info.get("max_connections")
         remaining_h, usage_percent = calc_limit_view(t["total"], traffic_limit_bytes)
         disabled.append(
             {
@@ -890,7 +1008,15 @@ def build_users_view() -> tuple[list[dict], list[dict], dict]:
                 "disabled_at": rec.get("disabled_at", ""),
                 "disabled_reason": rec.get("reason", ""),
                 "is_protected": username in protected,
-                "url": url,
+                "url": make_client_url(
+                    username,
+                    str(password),
+                    host,
+                    port,
+                    sni,
+                    speed_up_mbps=speed_up_mbps if isinstance(speed_up_mbps, (int, float)) else None,
+                    speed_down_mbps=speed_down_mbps if isinstance(speed_down_mbps, (int, float)) else None,
+                ) if password else url,
                 "rx": t["rx"],
                 "tx": t["tx"],
                 "total": t["total"],
@@ -908,6 +1034,9 @@ def build_users_view() -> tuple[list[dict], list[dict], dict]:
                 "traffic_usage_percent": usage_percent,
                 "duration_days": duration_days if isinstance(duration_days, int) and duration_days > 0 else None,
                 "expires_at": expires_at,
+                "speed_up_mbps": speed_up_mbps if isinstance(speed_up_mbps, (int, float)) and speed_up_mbps > 0 else None,
+                "speed_down_mbps": speed_down_mbps if isinstance(speed_down_mbps, (int, float)) and speed_down_mbps > 0 else None,
+                "max_connections": max_connections if isinstance(max_connections, int) and max_connections > 0 else None,
                 "is_disabled": True,
             }
         )
@@ -919,6 +1048,9 @@ def apply_users(
     traffic_limit_gb: float | None,
     duration_days: int | None,
     expires_at: datetime | None,
+    speed_up_mbps: float | None,
+    speed_down_mbps: float | None,
+    max_connections: int | None,
 ) -> tuple[list[dict], list[str]]:
     cfg = load_hy2_config()
     up = cfg["auth"]["userpass"]
@@ -937,7 +1069,15 @@ def apply_users(
         password = random_password()
         up[username] = password
 
-        url = make_client_url(username, password, host, port, sni)
+        url = make_client_url(
+            username,
+            password,
+            host,
+            port,
+            sni,
+            speed_up_mbps=speed_up_mbps,
+            speed_down_mbps=speed_down_mbps,
+        )
 
         results.append(
             {
@@ -960,7 +1100,15 @@ def apply_users(
     write_config_with_backup_and_restart(cfg)
     write_registry(registry)
     processed_usernames = [item["username"] for item in results]
-    apply_limits_to_users(processed_usernames, traffic_limit_gb, duration_days, expires_at)
+    apply_limits_to_users(
+        processed_usernames,
+        traffic_limit_gb,
+        duration_days,
+        expires_at,
+        speed_up_mbps,
+        speed_down_mbps,
+        max_connections,
+    )
     return results, skipped
 
 
@@ -1085,29 +1233,61 @@ def delete_users(scope: str, mode: str, selected: list[str]) -> str:
     return f"Удалено: {deleted_count}"
 
 
-@app.route("/", methods=["GET"])
-@requires_auth
-def index():
+def base_defaults() -> dict:
+    return {
+        "prefix": "user-",
+        "count": 10,
+        "start": 1,
+        "width": 3,
+        "mode": "manual",
+        "traffic_limit_gb_manual": "",
+        "duration_days_manual": "",
+        "expires_at_manual": "",
+        "traffic_limit_gb_prefix": "",
+        "duration_days_prefix": "",
+        "expires_at_prefix": "",
+        "speed_up_mbps_manual": "",
+        "speed_down_mbps_manual": "",
+        "max_connections_manual": "",
+        "speed_up_mbps_prefix": "",
+        "speed_down_mbps_prefix": "",
+        "max_connections_prefix": "",
+    }
+
+
+def render_index_page(
+    *,
+    defaults: dict | None = None,
+    results: list[dict] | None = None,
+    skipped: list[str] | None = None,
+    ok_message: str | None = None,
+    error_message: str | None = None,
+    created_urls: list[str] | None = None,
+):
     active_users, disabled_users, stats = build_users_view()
+    cfg = load_hy2_config()
+    merged_defaults = base_defaults()
+    if isinstance(defaults, dict):
+        merged_defaults.update(defaults)
     return render_template(
         "index.html",
-        defaults={
-            "prefix": "user-",
-            "count": 10,
-            "start": 1,
-            "width": 3,
-            "mode": "manual",
-            "traffic_limit_gb_manual": "",
-            "duration_days_manual": "",
-            "expires_at_manual": "",
-            "traffic_limit_gb_prefix": "",
-            "duration_days_prefix": "",
-            "expires_at_prefix": "",
-        },
+        defaults=merged_defaults,
+        results=results or [],
+        skipped=skipped or [],
+        ok_message=ok_message or "",
+        error_message=error_message or "",
+        created_urls=created_urls or [],
         active_users=active_users,
         disabled_users=disabled_users,
         stats=stats,
+        bandwidth=read_bandwidth_settings(cfg),
     )
+
+
+@app.route("/", methods=["GET"])
+@requires_auth
+def index():
+    return render_index_page()
 
 
 @app.route("/apply", methods=["POST"])
@@ -1117,6 +1297,9 @@ def apply_handler():
     traffic_limit_raw = request.form.get("traffic_limit_gb_manual", "") if mode == "manual" else request.form.get("traffic_limit_gb_prefix", "")
     duration_days_raw = request.form.get("duration_days_manual", "") if mode == "manual" else request.form.get("duration_days_prefix", "")
     expires_at_raw = request.form.get("expires_at_manual", "") if mode == "manual" else request.form.get("expires_at_prefix", "")
+    speed_up_raw = request.form.get("speed_up_mbps_manual", "") if mode == "manual" else request.form.get("speed_up_mbps_prefix", "")
+    speed_down_raw = request.form.get("speed_down_mbps_manual", "") if mode == "manual" else request.form.get("speed_down_mbps_prefix", "")
+    max_connections_raw = request.form.get("max_connections_manual", "") if mode == "manual" else request.form.get("max_connections_prefix", "")
 
     try:
         if mode == "manual":
@@ -1135,12 +1318,21 @@ def apply_handler():
         traffic_limit_gb = parse_float_or_none(traffic_limit_raw)
         duration_days = parse_int_or_none(duration_days_raw)
         expires_at = parse_date_to_utc_end(expires_at_raw)
+        speed_up_mbps = parse_float_or_none(speed_up_raw)
+        speed_down_mbps = parse_float_or_none(speed_down_raw)
+        max_connections = parse_int_or_none(max_connections_raw)
 
-        results, skipped = apply_users(usernames, traffic_limit_gb, duration_days, expires_at)
+        results, skipped = apply_users(
+            usernames,
+            traffic_limit_gb,
+            duration_days,
+            expires_at,
+            speed_up_mbps,
+            speed_down_mbps,
+            max_connections,
+        )
         created_urls = [item["url"] for item in results if item.get("status") == "created"]
-        active_users, disabled_users, stats = build_users_view()
-        return render_template(
-            "index.html",
+        return render_index_page(
             defaults={
                 "prefix": request.form.get("prefix", "user-").strip() or "user-",
                 "count": request.form.get("count", "10"),
@@ -1154,19 +1346,20 @@ def apply_handler():
                 "traffic_limit_gb_prefix": request.form.get("traffic_limit_gb_prefix", ""),
                 "duration_days_prefix": request.form.get("duration_days_prefix", ""),
                 "expires_at_prefix": request.form.get("expires_at_prefix", ""),
+                "speed_up_mbps_manual": request.form.get("speed_up_mbps_manual", ""),
+                "speed_down_mbps_manual": request.form.get("speed_down_mbps_manual", ""),
+                "max_connections_manual": request.form.get("max_connections_manual", ""),
+                "speed_up_mbps_prefix": request.form.get("speed_up_mbps_prefix", ""),
+                "speed_down_mbps_prefix": request.form.get("speed_down_mbps_prefix", ""),
+                "max_connections_prefix": request.form.get("max_connections_prefix", ""),
             },
             results=results,
             skipped=skipped,
             ok_message=f"Успешно обработано: {len(results)}",
             created_urls=created_urls,
-            active_users=active_users,
-            disabled_users=disabled_users,
-            stats=stats,
         )
     except Exception as e:
-        active_users, disabled_users, stats = build_users_view()
-        return render_template(
-            "index.html",
+        return render_index_page(
             defaults={
                 "prefix": request.form.get("prefix", "user-").strip() or "user-",
                 "count": request.form.get("count", "10"),
@@ -1180,11 +1373,14 @@ def apply_handler():
                 "traffic_limit_gb_prefix": request.form.get("traffic_limit_gb_prefix", ""),
                 "duration_days_prefix": request.form.get("duration_days_prefix", ""),
                 "expires_at_prefix": request.form.get("expires_at_prefix", ""),
+                "speed_up_mbps_manual": request.form.get("speed_up_mbps_manual", ""),
+                "speed_down_mbps_manual": request.form.get("speed_down_mbps_manual", ""),
+                "max_connections_manual": request.form.get("max_connections_manual", ""),
+                "speed_up_mbps_prefix": request.form.get("speed_up_mbps_prefix", ""),
+                "speed_down_mbps_prefix": request.form.get("speed_down_mbps_prefix", ""),
+                "max_connections_prefix": request.form.get("max_connections_prefix", ""),
             },
             error_message=str(e),
-            active_users=active_users,
-            disabled_users=disabled_users,
-            stats=stats,
         )
 
 
@@ -1205,49 +1401,9 @@ def users_toggle_handler():
     action = request.form.get("action", "").strip()
     try:
         msg = toggle_user(username, action)
-        active_users, disabled_users, stats = build_users_view()
-        return render_template(
-            "index.html",
-            defaults={
-                "prefix": "user-",
-                "count": 10,
-                "start": 1,
-                "width": 3,
-                "mode": "manual",
-                "traffic_limit_gb_manual": "",
-                "duration_days_manual": "",
-                "expires_at_manual": "",
-                "traffic_limit_gb_prefix": "",
-                "duration_days_prefix": "",
-                "expires_at_prefix": "",
-            },
-            ok_message=msg,
-            active_users=active_users,
-            disabled_users=disabled_users,
-            stats=stats,
-        )
+        return render_index_page(ok_message=msg)
     except Exception as e:
-        active_users, disabled_users, stats = build_users_view()
-        return render_template(
-            "index.html",
-            defaults={
-                "prefix": "user-",
-                "count": 10,
-                "start": 1,
-                "width": 3,
-                "mode": "manual",
-                "traffic_limit_gb_manual": "",
-                "duration_days_manual": "",
-                "expires_at_manual": "",
-                "traffic_limit_gb_prefix": "",
-                "duration_days_prefix": "",
-                "expires_at_prefix": "",
-            },
-            error_message=str(e),
-            active_users=active_users,
-            disabled_users=disabled_users,
-            stats=stats,
-        )
+        return render_index_page(error_message=str(e))
 
 
 @app.route("/users/delete", methods=["POST"])
@@ -1258,49 +1414,9 @@ def users_delete_handler():
     selected = request.form.getlist("selected_users")
     try:
         msg = delete_users(scope, mode, selected)
-        active_users, disabled_users, stats = build_users_view()
-        return render_template(
-            "index.html",
-            defaults={
-                "prefix": "user-",
-                "count": 10,
-                "start": 1,
-                "width": 3,
-                "mode": "manual",
-                "traffic_limit_gb_manual": "",
-                "duration_days_manual": "",
-                "expires_at_manual": "",
-                "traffic_limit_gb_prefix": "",
-                "duration_days_prefix": "",
-                "expires_at_prefix": "",
-            },
-            ok_message=msg,
-            active_users=active_users,
-            disabled_users=disabled_users,
-            stats=stats,
-        )
+        return render_index_page(ok_message=msg)
     except Exception as e:
-        active_users, disabled_users, stats = build_users_view()
-        return render_template(
-            "index.html",
-            defaults={
-                "prefix": "user-",
-                "count": 10,
-                "start": 1,
-                "width": 3,
-                "mode": "manual",
-                "traffic_limit_gb_manual": "",
-                "duration_days_manual": "",
-                "expires_at_manual": "",
-                "traffic_limit_gb_prefix": "",
-                "duration_days_prefix": "",
-                "expires_at_prefix": "",
-            },
-            error_message=str(e),
-            active_users=active_users,
-            disabled_users=disabled_users,
-            stats=stats,
-        )
+        return render_index_page(error_message=str(e))
 
 
 @app.route("/users/limits", methods=["POST"])
@@ -1310,55 +1426,48 @@ def users_limits_handler():
     traffic_limit_raw = request.form.get("traffic_limit_gb", "")
     duration_days_raw = request.form.get("duration_days", "")
     expires_at_raw = request.form.get("expires_at", "")
+    speed_up_raw = request.form.get("speed_up_mbps", "")
+    speed_down_raw = request.form.get("speed_down_mbps", "")
+    max_connections_raw = request.form.get("max_connections", "")
     try:
         traffic_limit_gb = parse_float_or_none(traffic_limit_raw)
         duration_days = parse_int_or_none(duration_days_raw)
         expires_at = parse_date_to_utc_end(expires_at_raw)
-        update_single_user_limits(username, traffic_limit_gb, duration_days, expires_at)
+        speed_up_mbps = parse_float_or_none(speed_up_raw)
+        speed_down_mbps = parse_float_or_none(speed_down_raw)
+        max_connections = parse_int_or_none(max_connections_raw)
+        update_single_user_limits(
+            username,
+            traffic_limit_gb,
+            duration_days,
+            expires_at,
+            speed_up_mbps,
+            speed_down_mbps,
+            max_connections,
+        )
         msg = "Лимиты пользователя обновлены"
-        active_users, disabled_users, stats = build_users_view()
-        return render_template(
-            "index.html",
-            defaults={
-                "prefix": "user-",
-                "count": 10,
-                "start": 1,
-                "width": 3,
-                "mode": "manual",
-                "traffic_limit_gb_manual": "",
-                "duration_days_manual": "",
-                "expires_at_manual": "",
-                "traffic_limit_gb_prefix": "",
-                "duration_days_prefix": "",
-                "expires_at_prefix": "",
-            },
-            ok_message=msg,
-            active_users=active_users,
-            disabled_users=disabled_users,
-            stats=stats,
-        )
+        return render_index_page(ok_message=msg)
     except Exception as e:
-        active_users, disabled_users, stats = build_users_view()
-        return render_template(
-            "index.html",
-            defaults={
-                "prefix": "user-",
-                "count": 10,
-                "start": 1,
-                "width": 3,
-                "mode": "manual",
-                "traffic_limit_gb_manual": "",
-                "duration_days_manual": "",
-                "expires_at_manual": "",
-                "traffic_limit_gb_prefix": "",
-                "duration_days_prefix": "",
-                "expires_at_prefix": "",
-            },
-            error_message=str(e),
-            active_users=active_users,
-            disabled_users=disabled_users,
-            stats=stats,
-        )
+        return render_index_page(error_message=str(e))
+
+
+@app.route("/server/bandwidth", methods=["POST"])
+@requires_auth
+def server_bandwidth_handler():
+    up_raw = request.form.get("server_up_mbps", "")
+    down_raw = request.form.get("server_down_mbps", "")
+    try:
+        up_mbps = parse_positive_mbps(up_raw, "Up (Mbps)")
+        down_mbps = parse_positive_mbps(down_raw, "Down (Mbps)")
+        cfg = load_hy2_config()
+        cfg["bandwidth"] = {
+            "up": f"{up_mbps:g} mbps",
+            "down": f"{down_mbps:g} mbps",
+        }
+        write_config_with_backup_and_restart(cfg)
+        return render_index_page(ok_message=f"Лимит скорости обновлен: {up_mbps:g}/{down_mbps:g} Mbps")
+    except Exception as e:
+        return render_index_page(error_message=str(e))
 
 
 @app.route("/api/live", methods=["GET"])
@@ -1474,6 +1583,18 @@ PYAPP
     .summary-select { display: inline-flex; align-items: center; margin-right: 18px; }
     .summary-select input { margin: 0; width: 16px; height: 16px; }
     .summary-meta { font-size: 12px; color: var(--muted); margin-left: 8px; font-weight: 500; }
+    .conn-badge {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 1px 6px;
+      border-radius: 999px;
+      font-size: 11px;
+      color: #bfdbfe;
+      background: rgba(37, 99, 235, 0.22);
+      border: 1px solid rgba(59, 130, 246, 0.45);
+      vertical-align: middle;
+      font-weight: 700;
+    }
     .edit-limits { margin-top: 8px; border-top: 1px dashed var(--border); padding-top: 8px; }
     .edit-grid { display: grid; grid-template-columns: repeat(3, minmax(120px, 1fr)); gap: 8px; }
     .edit-grid label { margin-top: 0; font-size: 12px; color: var(--muted); font-weight: 500; }
@@ -1538,6 +1659,43 @@ PYAPP
     .limits-grid { display: grid; grid-template-columns: repeat(3, minmax(140px, 1fr)); gap: 8px; margin-top: 8px; }
     .limits-grid label { margin-top: 0; font-size: 12px; color: var(--muted); }
     .limit-note { font-size: 12px; color: var(--muted); margin-top: 6px; }
+    .server-box { margin-bottom: 10px; }
+    .server-grid { display: grid; grid-template-columns: repeat(2, minmax(140px, 1fr)); gap: 8px; }
+    .server-grid label { margin-top: 0; font-size: 12px; color: var(--muted); }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+    .secondary-btn { background: #374151; }
+    .secondary-btn:hover { background: #4b5563; }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.65);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 14px;
+      z-index: 1000;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal-card {
+      width: min(700px, 100%);
+      max-height: 90vh;
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--bg-soft);
+      padding: 12px;
+    }
+    .modal-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .close-btn {
+      width: 30px;
+      height: 30px;
+      border-radius: 8px;
+      background: #1f2937;
+      font-size: 18px;
+      line-height: 1;
+      padding: 0;
+    }
+    .close-btn:hover { background: #374151; }
     .site-footer {
       margin-top: 18px;
       padding-top: 12px;
@@ -1572,7 +1730,10 @@ PYAPP
   </style>
 </head>
 <body>
-  <h1>Hysteria2 Clients Admin</h1>
+  <div class="topbar">
+    <h1>Hysteria2 Clients Admin</h1>
+    <button id="open-server-settings" type="button" class="secondary-btn">Настройки сервера</button>
+  </div>
   <p id="copy-status" class="copy-status"></p>
 
   {% if ok_message %}<p class="ok"><strong>{{ ok_message }}</strong></p>{% endif %}
@@ -1602,6 +1763,29 @@ PYAPP
     <p class="muted">Статистика отключена. Включите trafficStats в конфиге Hysteria2.</p>
   {% endif %}
 
+  <div id="server-settings-modal" class="modal-backdrop" aria-hidden="true">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2>Настройки сервера</h2>
+        <button id="close-server-settings" type="button" class="close-btn" title="Закрыть">×</button>
+      </div>
+      <form method="post" action="/server/bandwidth">
+        <div class="server-grid">
+          <div>
+            <label>Скорость Up (Mbps)</label>
+            <input type="number" step="0.1" min="0.1" name="server_up_mbps" value="{{ bandwidth.up_mbps or '' }}" placeholder="например 150">
+          </div>
+          <div>
+            <label>Скорость Down (Mbps)</label>
+            <input type="number" step="0.1" min="0.1" name="server_down_mbps" value="{{ bandwidth.down_mbps or '' }}" placeholder="например 150">
+          </div>
+        </div>
+        <div class="actions"><button type="submit">Применить лимит скорости</button></div>
+      </form>
+      <p class="muted">Текущий глобальный лимит Hysteria2: Up {{ bandwidth.up_raw or 'не задан' }} / Down {{ bandwidth.down_raw or 'не задан' }}</p>
+    </div>
+  </div>
+
   <form method="post" action="/apply">
     <input type="hidden" id="mode-input" name="mode" value="{{ defaults.mode or 'manual' }}">
     <details id="create-users-card" class="create-card">
@@ -1630,6 +1814,20 @@ PYAPP
               <input type="date" name="expires_at_manual" value="{{ defaults.expires_at_manual or '' }}">
             </div>
           </div>
+          <div class="limits-grid">
+            <div>
+              <label>Лимит скорости Up (Mbps)</label>
+              <input type="number" step="0.1" min="0" name="speed_up_mbps_manual" value="{{ defaults.speed_up_mbps_manual or '' }}" placeholder="например 30">
+            </div>
+            <div>
+              <label>Лимит скорости Down (Mbps)</label>
+              <input type="number" step="0.1" min="0" name="speed_down_mbps_manual" value="{{ defaults.speed_down_mbps_manual or '' }}" placeholder="например 50">
+            </div>
+            <div>
+              <label>Лимит подключений</label>
+              <input type="number" min="1" name="max_connections_manual" value="{{ defaults.max_connections_manual or '' }}" placeholder="например 2">
+            </div>
+          </div>
           <p class="limit-note">Пустые поля = без лимитов.</p>
         </div>
 
@@ -1654,6 +1852,20 @@ PYAPP
             <div>
               <label>До даты</label>
               <input type="date" name="expires_at_prefix" value="{{ defaults.expires_at_prefix or '' }}">
+            </div>
+          </div>
+          <div class="limits-grid">
+            <div>
+              <label>Лимит скорости Up (Mbps)</label>
+              <input type="number" step="0.1" min="0" name="speed_up_mbps_prefix" value="{{ defaults.speed_up_mbps_prefix or '' }}" placeholder="например 30">
+            </div>
+            <div>
+              <label>Лимит скорости Down (Mbps)</label>
+              <input type="number" step="0.1" min="0" name="speed_down_mbps_prefix" value="{{ defaults.speed_down_mbps_prefix or '' }}" placeholder="например 50">
+            </div>
+            <div>
+              <label>Лимит подключений</label>
+              <input type="number" min="1" name="max_connections_prefix" value="{{ defaults.max_connections_prefix or '' }}" placeholder="например 2">
             </div>
           </div>
           <p class="limit-note">Пустые поля = без лимитов.</p>
@@ -1704,10 +1916,10 @@ PYAPP
     <div class="users-tools">
       <input id="user-search" type="text" placeholder="Поиск пользователя">
       <select id="user-sort">
+        <option value="online_first" selected>Сортировка: онлайн сначала</option>
         <option value="name_asc">Сортировка: имя A→Z</option>
         <option value="traffic_desc">Сортировка: трафик ↓</option>
         <option value="traffic_asc">Сортировка: трафик ↑</option>
-        <option value="online_first">Сортировка: онлайн сначала</option>
       </select>
     </div>
     <form id="active-delete-form" method="post" action="/users/delete">
@@ -1726,7 +1938,7 @@ PYAPP
     {% if active_users %}
       {% for u in active_users %}
         <details class="user-card" data-username="{{ u.username }}" data-total="{{ u.total }}" data-online="{{ 1 if u.is_online else 0 }}" data-disabled="0">
-          <summary><span class="summary-name">{{ u.username }}{% if u.is_protected %} <span class="muted">(защищен)</span>{% endif %}{% if u.is_online %}<span class="status-dot online" data-user-dot="{{ u.username }}" title="Онлайн: {{ u.online_count }}"></span>{% else %}<span class="status-dot offline" data-user-dot="{{ u.username }}" title="Оффлайн"></span>{% endif %}<span class="summary-meta" data-user-meta="{{ u.username }}">↓ {{ u.rx_h }} | ↑ {{ u.tx_h }} | Σ {{ u.total_h }}</span></span><label class="summary-select" title="Выбрать для удаления"><input form="active-delete-form" type="checkbox" name="selected_users" value="{{ u.username }}" {% if u.is_protected %}disabled{% endif %}></label></summary>
+          <summary><span class="summary-name">{{ u.username }}{% if u.is_protected %} <span class="muted">(защищен)</span>{% endif %}{% if u.is_online %}<span class="status-dot online" data-user-dot="{{ u.username }}" title="Онлайн: {{ u.online_count }}"></span>{% else %}<span class="status-dot offline" data-user-dot="{{ u.username }}" title="Оффлайн"></span>{% endif %}{% if u.online_count and u.online_count > 1 %}<span class="conn-badge" data-user-online-count="{{ u.username }}" title="Одновременных подключений">x{{ u.online_count }}</span>{% else %}<span class="conn-badge" data-user-online-count="{{ u.username }}" style="display:none;"></span>{% endif %}<span class="summary-meta" data-user-meta="{{ u.username }}">↓ {{ u.rx_h }} | ↑ {{ u.tx_h }} | Σ {{ u.total_h }}</span></span><label class="summary-select" title="Выбрать для удаления"><input form="active-delete-form" type="checkbox" name="selected_users" value="{{ u.username }}" {% if u.is_protected %}disabled{% endif %}></label></summary>
           <div class="user-body">
             <form method="post" action="/users/toggle" class="inline">
               <input type="hidden" name="username" value="{{ u.username }}">
@@ -1737,6 +1949,9 @@ PYAPP
               {% if u.traffic_limit_bytes and u.traffic_limit_bytes > 0 %}Лимит трафика: {{ u.traffic_limit_h }}{% else %}Лимит трафика: нет{% endif %}
               | {% if u.duration_days %}Срок: {{ u.duration_days }} дн.{% else %}Срок: нет{% endif %}
               | {% if u.expires_at %}До: {{ u.expires_at[:10] }}{% else %}До даты: нет{% endif %}
+              | {% if u.speed_up_mbps %}Up: {{ u.speed_up_mbps }} Mbps{% else %}Up: нет{% endif %}
+              | {% if u.speed_down_mbps %}Down: {{ u.speed_down_mbps }} Mbps{% else %}Down: нет{% endif %}
+              | {% if u.max_connections %}Подкл.: {{ u.max_connections }}{% else %}Подкл.: нет{% endif %}
             </p>
             {% if u.traffic_limit_bytes and u.traffic_limit_bytes > 0 %}
               <p class="user-stats" data-user-limit-text="{{ u.username }}">Остаток: {{ u.traffic_remaining_h }}</p>
@@ -1756,6 +1971,20 @@ PYAPP
                 <div>
                   <label>До даты</label>
                   <input type="date" name="expires_at" value="{{ u.expires_at[:10] if u.expires_at else '' }}">
+                </div>
+              </div>
+              <div class="edit-grid">
+                <div>
+                  <label>Скорость Up (Mbps)</label>
+                  <input type="number" step="0.1" min="0" name="speed_up_mbps" value="{{ u.speed_up_mbps if u.speed_up_mbps else '' }}">
+                </div>
+                <div>
+                  <label>Скорость Down (Mbps)</label>
+                  <input type="number" step="0.1" min="0" name="speed_down_mbps" value="{{ u.speed_down_mbps if u.speed_down_mbps else '' }}">
+                </div>
+                <div>
+                  <label>Лимит подключений</label>
+                  <input type="number" min="1" name="max_connections" value="{{ u.max_connections if u.max_connections else '' }}">
                 </div>
               </div>
               <div class="actions"><button type="submit">Редактировать лимиты</button></div>
@@ -1784,7 +2013,7 @@ PYAPP
     {% if disabled_users %}
       {% for u in disabled_users %}
         <details class="user-card" data-username="{{ u.username }}" data-total="{{ u.total }}" data-online="0" data-disabled="1">
-          <summary>{{ u.username }}{% if u.is_protected %} <span class="muted">(защищен)</span>{% endif %}<span class="status-dot disabled" data-user-dot="{{ u.username }}" title="Клиент выключен"></span><span class="summary-meta" data-user-meta="{{ u.username }}">↓ {{ u.rx_h }} | ↑ {{ u.tx_h }} | Σ {{ u.total_h }}</span></summary>
+          <summary>{{ u.username }}{% if u.is_protected %} <span class="muted">(защищен)</span>{% endif %}<span class="status-dot disabled" data-user-dot="{{ u.username }}" title="Клиент выключен"></span><span class="conn-badge" data-user-online-count="{{ u.username }}" style="display:none;"></span><span class="summary-meta" data-user-meta="{{ u.username }}">↓ {{ u.rx_h }} | ↑ {{ u.tx_h }} | Σ {{ u.total_h }}</span></summary>
           <div class="user-body">
             <p class="muted">Отключен: {{ u.disabled_at or 'неизвестно' }}</p>
             <form method="post" action="/users/toggle" class="inline">
@@ -1796,6 +2025,9 @@ PYAPP
               {% if u.traffic_limit_bytes and u.traffic_limit_bytes > 0 %}Лимит трафика: {{ u.traffic_limit_h }}{% else %}Лимит трафика: нет{% endif %}
               | {% if u.duration_days %}Срок: {{ u.duration_days }} дн.{% else %}Срок: нет{% endif %}
               | {% if u.expires_at %}До: {{ u.expires_at[:10] }}{% else %}До даты: нет{% endif %}
+              | {% if u.speed_up_mbps %}Up: {{ u.speed_up_mbps }} Mbps{% else %}Up: нет{% endif %}
+              | {% if u.speed_down_mbps %}Down: {{ u.speed_down_mbps }} Mbps{% else %}Down: нет{% endif %}
+              | {% if u.max_connections %}Подкл.: {{ u.max_connections }}{% else %}Подкл.: нет{% endif %}
             </p>
             {% if u.traffic_limit_bytes and u.traffic_limit_bytes > 0 %}
               <p class="user-stats" data-user-limit-text="{{ u.username }}">Остаток: {{ u.traffic_remaining_h }}</p>
@@ -1818,6 +2050,20 @@ PYAPP
                 <div>
                   <label>До даты</label>
                   <input type="date" name="expires_at" value="{{ u.expires_at[:10] if u.expires_at else '' }}">
+                </div>
+              </div>
+              <div class="edit-grid">
+                <div>
+                  <label>Скорость Up (Mbps)</label>
+                  <input type="number" step="0.1" min="0" name="speed_up_mbps" value="{{ u.speed_up_mbps if u.speed_up_mbps else '' }}">
+                </div>
+                <div>
+                  <label>Скорость Down (Mbps)</label>
+                  <input type="number" step="0.1" min="0" name="speed_down_mbps" value="{{ u.speed_down_mbps if u.speed_down_mbps else '' }}">
+                </div>
+                <div>
+                  <label>Лимит подключений</label>
+                  <input type="number" min="1" name="max_connections" value="{{ u.max_connections if u.max_connections else '' }}">
                 </div>
               </div>
               <div class="actions"><button type="submit">Редактировать лимиты</button></div>
@@ -1875,11 +2121,41 @@ PYAPP
       const statSumTx = document.getElementById("stat-sum-tx");
       const statSumTotal = document.getElementById("stat-sum-total");
       const statOnline = document.getElementById("stat-online");
+      const openServerSettingsBtn = document.getElementById("open-server-settings");
+      const closeServerSettingsBtn = document.getElementById("close-server-settings");
+      const serverSettingsModal = document.getElementById("server-settings-modal");
       const modeInput = document.getElementById("mode-input");
       const modeManualBtn = document.getElementById("mode-manual-btn");
       const modePrefixBtn = document.getElementById("mode-prefix-btn");
       const modeManualPanel = document.getElementById("mode-manual-panel");
       const modePrefixPanel = document.getElementById("mode-prefix-panel");
+
+      function openServerModal() {
+        if (!serverSettingsModal) return;
+        serverSettingsModal.classList.add("open");
+        serverSettingsModal.setAttribute("aria-hidden", "false");
+      }
+
+      function closeServerModal() {
+        if (!serverSettingsModal) return;
+        serverSettingsModal.classList.remove("open");
+        serverSettingsModal.setAttribute("aria-hidden", "true");
+      }
+
+      if (openServerSettingsBtn) {
+        openServerSettingsBtn.addEventListener("click", openServerModal);
+      }
+      if (closeServerSettingsBtn) {
+        closeServerSettingsBtn.addEventListener("click", closeServerModal);
+      }
+      if (serverSettingsModal) {
+        serverSettingsModal.addEventListener("click", function (e) {
+          if (e.target === serverSettingsModal) closeServerModal();
+        });
+      }
+      document.addEventListener("keydown", function (e) {
+        if (e.key === "Escape") closeServerModal();
+      });
 
       function setTab(name) {
         const active = name === "active";
@@ -1921,7 +2197,7 @@ PYAPP
           const uname = (card.dataset.username || "").toLowerCase();
           card.style.display = !q || uname.includes(q) ? "" : "none";
         });
-        const mode = (sortSelect && sortSelect.value) || "name_asc";
+        const mode = (sortSelect && sortSelect.value) || "online_first";
         cards.sort(function (a, b) {
           const aName = (a.dataset.username || "").toLowerCase();
           const bName = (b.dataset.username || "").toLowerCase();
@@ -1978,6 +2254,7 @@ PYAPP
 
       const cardByUser = {};
       const dotByUser = {};
+      const onlineCountBadgeByUser = {};
       const metaByUser = {};
       const limitTextByUser = {};
       const limitBarByUser = {};
@@ -1988,6 +2265,9 @@ PYAPP
       });
       document.querySelectorAll("[data-user-dot]").forEach(function (el) {
         dotByUser[el.getAttribute("data-user-dot")] = el;
+      });
+      document.querySelectorAll("[data-user-online-count]").forEach(function (el) {
+        onlineCountBadgeByUser[el.getAttribute("data-user-online-count")] = el;
       });
       document.querySelectorAll("[data-user-meta]").forEach(function (el) {
         metaByUser[el.getAttribute("data-user-meta")] = el;
@@ -2036,6 +2316,18 @@ PYAPP
               } else {
                 dot.classList.add("offline");
                 dot.title = "Оффлайн";
+              }
+            }
+            if (onlineCountBadgeByUser[u]) {
+              const badge = onlineCountBadgeByUser[u];
+              const cnt = Number(info.online_count || 0);
+              if (!info.is_disabled && cnt > 1) {
+                badge.style.display = "inline-block";
+                badge.textContent = "x" + cnt;
+                badge.title = "Одновременных подключений: " + cnt;
+              } else {
+                badge.style.display = "none";
+                badge.textContent = "";
               }
             }
             if (metaByUser[u]) {

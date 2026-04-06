@@ -43,6 +43,17 @@
 
 - `install_hysteria2.sh`
 
+Запуск без клонирования репозитория (скачать и сразу выполнить):
+
+- [Скачать и запустить INTERACTIVE](https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hysteria2.sh)
+  ```bash
+  bash -c "$(curl -fsSL https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hysteria2.sh)" -- --interactive
+  ```
+- [Скачать и запустить AUTO](https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hysteria2.sh)
+  ```bash
+  bash -c "$(curl -fsSL https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hysteria2.sh)" -- --auto --domain your.domain.com --email you@example.com
+  ```
+
 ---
 
 ## Режимы запуска
@@ -52,6 +63,12 @@
 ```bash
 chmod +x install_hysteria2.sh
 ./install_hysteria2.sh --interactive
+```
+
+Или одной командой:
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hysteria2.sh)" -- --interactive
 ```
 
 Скрипт спросит:
@@ -69,6 +86,12 @@ chmod +x install_hysteria2.sh
 
 ```bash
 ./install_hysteria2.sh --auto --domain your.domain.com --email you@example.com
+```
+
+Или одной командой:
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hysteria2.sh)" -- --auto --domain your.domain.com --email you@example.com
 ```
 
 Дополнительно (необязательно):

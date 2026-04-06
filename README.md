@@ -17,6 +17,17 @@
 ./install_hy2_admin.sh --interactive
 ```
 
+Запуск без клонирования репозитория (скачать и сразу выполнить):
+
+- [Скачать и запустить AUTO](https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hy2_admin.sh)
+  ```bash
+  bash -c "$(curl -fsSL https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hy2_admin.sh)" -- --auto
+  ```
+- [Скачать и запустить INTERACTIVE](https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hy2_admin.sh)
+  ```bash
+  bash -c "$(curl -fsSL https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hy2_admin.sh)" -- --interactive
+  ```
+
 ---
 
 ## Возможности установщика
@@ -33,6 +44,24 @@
   - HTTPS через self-signed сертификат (для IP/без certbot),
   - HTTPS через certbot (для домена).
 - Открытие порта в UFW, если UFW активен.
+
+### Что умеет панель после установки
+
+- Массовое создание пользователей в режимах `Manual` и `Prefix`.
+- Генерация `hysteria2://` URL и QR-кодов с копированием по клику.
+- Управление пользователями: временное отключение/включение, удаление выбранных, удаление всех кроме защищенных.
+- Вкладки `Активные/Отключенные`, поиск и сортировка (по умолчанию: **онлайн сначала**).
+- Онлайн-статус и трафик по каждому пользователю + общая статистика `RX/TX/Total/Online`.
+- Live-обновление данных без перезагрузки страницы.
+- Бейдж множественных подключений в свернутом списке пользователей (`xN`, если устройств > 1).
+- Лимиты пользователей при создании и редактировании:
+  - трафик (GB),
+  - срок в днях,
+  - дата окончания,
+  - скорость `Up/Down` (Mbps),
+  - лимит одновременных подключений.
+- Модальное окно **«Настройки сервера»** для изменения глобального `bandwidth up/down` Hysteria2.
+- Безопасное применение изменений конфига Hysteria2: backup, atomic write, restart, rollback.
 
 ---
 
@@ -76,6 +105,12 @@ chmod +x install_hy2_admin.sh
 ./install_hy2_admin.sh --auto
 ```
 
+Или одной командой:
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hy2_admin.sh)" -- --auto
+```
+
 Что делает auto:
 
 - определяет IP сервера,
@@ -88,6 +123,12 @@ chmod +x install_hy2_admin.sh
 
 ```bash
 ./install_hy2_admin.sh --interactive
+```
+
+Или одной командой:
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hy2_admin.sh)" -- --interactive
 ```
 
 Что спрашивает interactive:
@@ -113,6 +154,8 @@ chmod +x install_hy2_admin.sh
 ```bash
 ./install_hy2_admin.sh --auto
 ./install_hy2_admin.sh --interactive
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hy2_admin.sh)" -- --auto
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hy2_admin.sh)" -- --interactive
 ```
 
 Другие параметры не поддерживаются.
