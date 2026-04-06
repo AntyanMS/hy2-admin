@@ -1,7 +1,3 @@
-<<<<<<< HEAD
-# hy2-admin
-Установщик web-панели для управления пользователями Hysteria2
-=======
 # HY2 Admin Installer
 
 Установщик web-панели для управления пользователями Hysteria2.
@@ -213,56 +209,9 @@ systemctl restart hy2-admin.service
 
 ---
 
-## Использование с Git
-
-### Инициализация репозитория
-
-```bash
-git init
-git add .
-git commit -m "Add HY2 admin installer and documentation"
-```
-
-### Рекомендуемый `.gitignore`
-
-Создайте `.gitignore` в корне и добавьте:
-
-```gitignore
-# Python
-__pycache__/
-*.pyc
-
-# Local/OS
-.DS_Store
-Thumbs.db
-
-# IDE
-.vscode/
-.idea/
-```
-
-### Базовый workflow
-
-```bash
-git checkout -b feature/update-installer
-# правки файлов
-git add hy2-admin/install_hy2_admin.sh hy2-admin/README.md
-git commit -m "Improve installer flow and docs"
-git push -u origin feature/update-installer
-```
-
----
-
 ## Безопасность
 
 - После установки сохраните сгенерированный пароль панели в безопасном месте.
 - Для публичного доступа используйте HTTPS.
 - Ограничьте доступ к порту панели через firewall, если нужно.
 - Регулярно обновляйте систему и зависимости.
-
----
-
-## Лицензия
-
-Добавьте ваш `LICENSE` (например, MIT) при публикации проекта.
->>>>>>> b350776 (Add installer and full documentation)
