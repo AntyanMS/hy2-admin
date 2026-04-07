@@ -2401,11 +2401,12 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=${INSTALL_DIR}
-ExecStart=${INSTALL_DIR}/.venv/bin/gunicorn -w 2 -b 0.0.0.0:${APP_PORT}${TLS_ARGS} app:app
+ExecStart=${INSTALL_DIR}/.venv/bin/gunicorn --workers 2 --worker-class gthread --threads 8 --timeout 15 --graceful-timeout 15 --keep-alive 2 --max-requests 1000 --max-requests-jitter 100 --access-logfile - -b 0.0.0.0:${APP_PORT}${TLS_ARGS} app:app
 Restart=always
 RestartSec=2
 User=root
 Group=root
+LimitNOFILE=65535
 
 [Install]
 WantedBy=multi-user.target
@@ -2431,7 +2432,8 @@ service_manage() {
 open_firewall() {
   if command -v ufw >/dev/null 2>&1; then
     if ufw status 2>/dev/null | grep -qi "Status: active"; then
-      ufw allow "${APP_PORT}/tcp" >/dev/null 2>&1 || true
+      yes | ufw delete allow "${APP_PORT}/tcp" >/dev/null 2>&1 || true
+      ufw limit "${APP_PORT}/tcp" >/dev/null 2>&1 || true
     fi
   fi
 }

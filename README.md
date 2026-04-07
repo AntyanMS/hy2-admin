@@ -1,155 +1,102 @@
-# HY2 Admin Installer
+# Hysteria2 + HY2 Admin
 
-Установщик web-панели для управления пользователями Hysteria2.
+Единый проект из двух установщиков:
 
-Скрипт устанавливает панель в `/opt/hy2-admin`, настраивает systemd-сервис `hy2-admin.service`, поднимает Flask+Gunicorn, и выводит ссылку/логин/пароль после установки.
+- `install_hysteria2.sh` — установка сервера Hysteria2
+- `install_hy2_admin.sh` — установка web-панели управления
+
+✅ Протестировано на **Ubuntu 24.04**
 
 ---
 
-## Что в репозитории
+## 1) Установка сервера Hysteria2
 
-- `install_hy2_admin.sh` — единый установщик.
-
-Поддерживаются только два режима запуска:
+### Быстрый старт
 
 ```bash
-./install_hy2_admin.sh --auto
-./install_hy2_admin.sh --interactive
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hysteria2.sh)" -- --auto --domain your.domain.com --email you@example.com
 ```
 
-Запуск без клонирования репозитория (скачать и сразу выполнить):
-
-- [Скачать и запустить AUTO](https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hy2_admin.sh)
-  ```bash
-  bash -c "$(curl -fsSL https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hy2_admin.sh)" -- --auto
-  ```
-- [Скачать и запустить INTERACTIVE](https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hy2_admin.sh)
-  ```bash
-  bash -c "$(curl -fsSL https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hy2_admin.sh)" -- --interactive
-  ```
-
----
-
-## Возможности установщика
-
-- Проверка запуска от `root`.
-- Определение IP сервера (для авто-режима).
-- Установка зависимостей (`python3`, `venv`, `pip`, `curl`, `openssl`).
-- Создание структуры панели в `/opt/hy2-admin`.
-- Генерация логина/пароля панели (пароль всегда случайный).
-- Генерация и регистрация `hy2-admin.service`.
-- Включение сервиса в автозагрузку (опционально в интерактивном режиме).
-- Запуск сервиса (опционально в интерактивном режиме).
-- Поддержка HTTP и HTTPS:
-  - HTTPS через self-signed сертификат (для IP/без certbot),
-  - HTTPS через certbot (для домена).
-- Открытие порта в UFW, если UFW активен.
-
-### Что умеет панель после установки
-
-- Массовое создание пользователей в режимах `Manual` и `Prefix`.
-- Генерация `hysteria2://` URL и QR-кодов с копированием по клику.
-- Управление пользователями: временное отключение/включение, удаление выбранных, удаление всех кроме защищенных.
-- Вкладки `Активные/Отключенные`, поиск и сортировка (по умолчанию: **онлайн сначала**).
-- Онлайн-статус и трафик по каждому пользователю + общая статистика `RX/TX/Total/Online`.
-- Live-обновление данных без перезагрузки страницы.
-- Бейдж множественных подключений в свернутом списке пользователей (`xN`, если устройств > 1).
-- Лимиты пользователей при создании и редактировании:
-  - трафик (GB),
-  - срок в днях,
-  - дата окончания,
-  - скорость `Up/Down` (Mbps),
-  - лимит одновременных подключений.
-- Модальное окно **«Настройки сервера»** для изменения глобального `bandwidth up/down` Hysteria2.
-- Безопасное применение изменений конфига Hysteria2: backup, atomic write, restart, rollback.
-
----
-
-## Требования
-
-- ОС: Debian/Ubuntu (используется `apt-get`).
-- Права `root`.
-- Для HTTPS через certbot:
-  - домен должен указывать на сервер,
-  - порт 80 должен быть доступен для HTTP-валидации.
-
----
-
-## Быстрый старт
-
-Если вам нужен только скрипт установки **чистой Hysteria2 по вашей инструкции**, смотрите:
-
-- `install_hysteria2.sh`
-- `HYSTERIA2_INSTALL.md`
-
-Быстрый запуск:
+### Автоматический режим
 
 ```bash
-chmod +x install_hysteria2.sh
-./install_hysteria2.sh --interactive
-# или
 ./install_hysteria2.sh --auto --domain your.domain.com --email you@example.com
 ```
 
+### Интерактивный режим
+
+```bash
+./install_hysteria2.sh --interactive
+```
+
+### Все режимы и параметры
+
+```bash
+./install_hysteria2.sh --interactive
+./install_hysteria2.sh --auto --domain your.domain.com --email you@example.com
+./install_hysteria2.sh --auto --domain your.domain.com --email you@example.com --admin-user Admin --admin-pass 0123456789abcdef0123456789abcdef --ssh-port 22
+DOMAIN=your.domain.com EMAIL=you@example.com ./install_hysteria2.sh --auto
+```
+
+Поддерживаемые флаги:
+
+- `--interactive`
+- `--auto`
+- `--domain <domain>`
+- `--email <email>`
+- `--admin-user <user>`
+- `--admin-pass <pass>`
+- `--ssh-port <port>`
+- `--no-autostart`
+- `--no-start`
+- `--skip-ufw`
+- `-h`, `--help`
+
+### Обслуживание
+
+```bash
+systemctl status hysteria-server.service
+systemctl restart hysteria-server.service
+journalctl -u hysteria-server.service -n 200 --no-pager
+ss -lntup | rg 443
+ufw status verbose
+```
+
+### Удаление
+
+```bash
+systemctl disable --now hysteria-server.service
+rm -f /etc/systemd/system/hysteria-server.service
+systemctl daemon-reload
+rm -rf /etc/hysteria
+rm -rf /var/www/masq
+```
+
+> Подробная инструкция по серверу: `HYSTERIA2_INSTALL.md`
+
 ---
 
-### 1) Подготовка
+## 2) Установка админки HY2 Admin
 
-```bash
-chmod +x install_hy2_admin.sh
-```
-
-### 2) Автоматическая установка
-
-```bash
-./install_hy2_admin.sh --auto
-```
-
-Или одной командой:
+### Быстрый старт
 
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hy2_admin.sh)" -- --auto
 ```
 
-Что делает auto:
+### Автоматический режим
 
-- определяет IP сервера,
-- ставит панель на HTTP (`http://IP:8787/`),
-- включает автозагрузку сервиса,
-- запускает сервис,
-- печатает финальные доступы.
+```bash
+./install_hy2_admin.sh --auto
+```
 
-### 3) Интерактивная установка
+### Интерактивный режим
 
 ```bash
 ./install_hy2_admin.sh --interactive
 ```
 
-Или одной командой:
-
-```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hy2_admin.sh)" -- --interactive
-```
-
-Что спрашивает interactive:
-
-- порт админки,
-- IP или домен,
-- HTTP/HTTPS (1/2),
-- использовать certbot (если домен + HTTPS),
-- добавить в автозагрузку (Y/N),
-- запускать сервис сейчас (Y/N),
-- пользователь панели `default/custom` (`d/c`).
-
-В конце печатаются:
-
-- ссылка на панель,
-- логин,
-- сгенерированный пароль.
-
----
-
-## Параметры запуска
+### Все режимы и варианты запуска
 
 ```bash
 ./install_hy2_admin.sh --auto
@@ -158,119 +105,53 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hy2_admin.sh)" -- --interactive
 ```
 
-Другие параметры не поддерживаются.
+Скрипт ставит панель в `/opt/hy2-admin`, создает `hy2-admin.service`, включает защитные параметры Gunicorn (gthread, timeout, recycling воркеров), включает `ufw limit` на порт панели (если UFW активен), и выводит ссылку/логин/пароль.
 
----
-
-## Что устанавливается
-
-### Каталоги и файлы
-
-- `/opt/hy2-admin/app.py`
-- `/opt/hy2-admin/templates/index.html`
-- `/opt/hy2-admin/requirements.txt`
-- `/opt/hy2-admin/.env`
-- `/opt/hy2-admin/.venv/`
-- `/opt/hy2-admin/data/`
-- `/opt/hy2-admin/backups/`
-- `/opt/hy2-admin/tls/` (если self-signed HTTPS)
-
-### Systemd
-
-- `/etc/systemd/system/hy2-admin.service`
-
----
-
-## Управление сервисом
+### Обслуживание
 
 ```bash
 systemctl status hy2-admin.service
 systemctl restart hy2-admin.service
-systemctl stop hy2-admin.service
-systemctl start hy2-admin.service
-systemctl enable hy2-admin.service
-systemctl disable hy2-admin.service
 journalctl -u hy2-admin.service -n 200 --no-pager
+ss -lntp | rg 8787
+ufw status
 ```
 
----
+Полезные пути:
 
-## Настройки панели
+- `/opt/hy2-admin/app.py`
+- `/opt/hy2-admin/templates/index.html`
+- `/opt/hy2-admin/.env`
+- `/etc/systemd/system/hy2-admin.service`
 
-Основные значения в `/opt/hy2-admin/.env`:
-
-- `HY2_CONFIG_PATH` — путь к конфигу Hysteria2.
-- `HY2_SERVICE_NAME` — имя сервиса Hysteria2.
-- `SERVER_HOST`, `SERVER_PORT`, `SERVER_SNI` — параметры для генерации клиентских URL.
-- `PANEL_BASIC_USER`, `PANEL_BASIC_PASS` — доступ в панель.
-- `PANEL_BIND_HOST`, `PANEL_BIND_PORT` — адрес/порт панели.
-- `PROTECTED_USERS` — защищенные пользователи, которых нельзя отключить/удалить массово.
-
-После изменения `.env`:
+### Удаление
 
 ```bash
-systemctl restart hy2-admin.service
+systemctl disable --now hy2-admin.service
+rm -f /etc/systemd/system/hy2-admin.service
+systemctl daemon-reload
+rm -rf /opt/hy2-admin
+yes | ufw delete limit 8787/tcp || true
+yes | ufw delete allow 8787/tcp || true
 ```
 
 ---
 
-## HTTPS сценарии
+## Возможности панели
 
-### HTTPS + домен + certbot
-
-Рекомендуется для production:
-
-- в интерактивном режиме выберите HTTPS,
-- укажите домен,
-- согласитесь на certbot,
-- введите email.
-
-### HTTPS + IP (или без certbot)
-
-Будет self-signed сертификат.
+- Управление пользователями Hysteria2 (создание/отключение/включение/удаление)
+- Режимы `Manual` и `Prefix`
+- QR и `hysteria2://` ссылки
+- Статистика трафика и онлайн
+- Лимиты: трафик, срок, дата, скорость `Up/Down`, лимит подключений
+- Бейдж `xN` в свернутом списке для подключений с нескольких устройств
+- Модальное окно настройки серверного `bandwidth`
+- Безопасное применение конфига с backup + rollback
 
 ---
 
-## Устранение проблем
+## Автор
 
-### Панель не открывается
-
-1. Проверьте сервис:
-   ```bash
-   systemctl status hy2-admin.service
-   ```
-2. Проверьте логи:
-   ```bash
-   journalctl -u hy2-admin.service -n 200 --no-pager
-   ```
-3. Проверьте порт:
-   ```bash
-   ss -lntp | rg 8787
-   ```
-4. Если UFW включен, проверьте правило:
-   ```bash
-   ufw status
-   ```
-
-### Проблемы с HTTPS/certbot
-
-- Убедитесь, что домен указывает на сервер.
-- Убедитесь, что порт 80 доступен.
-- Посмотрите логи certbot:
-  ```bash
-  journalctl -u certbot -n 200 --no-pager
-  ```
-
-### Ошибки применения пользователей Hysteria2
-
-- Проверьте путь к конфигу и имя сервиса в `.env`.
-- Проверьте права на файл конфига Hysteria2.
-
----
-
-## Безопасность
-
-- После установки сохраните сгенерированный пароль панели в безопасном месте.
-- Для публичного доступа используйте HTTPS.
-- Ограничьте доступ к порту панели через firewall, если нужно.
-- Регулярно обновляйте систему и зависимости.
+**AntyanMSA**  
+GitHub: [https://github.com/AntyanMS](https://github.com/AntyanMS)  
+Telegram: [https://t.me/Cmint](https://t.me/Cmint)
