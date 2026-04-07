@@ -38,6 +38,9 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/
 DOMAIN=your.domain.com EMAIL=you@example.com ./install_hysteria2.sh --auto
 ```
 
+Пояснение по `--ssh-port`: это порт **SSH для UFW-правила доступа**, а не порт Hysteria2.
+Указывайте его, если SSH на сервере работает не на `22` (например `2222`), чтобы не потерять доступ после настройки firewall.
+
 Поддерживаемые флаги:
 
 - `--interactive`
