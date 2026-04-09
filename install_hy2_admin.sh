@@ -135,6 +135,7 @@ EOF
 
   cat > "${INSTALL_DIR}/app.py" <<'PYAPP'
 import hashlib
+import html
 import io
 import ipaddress
 import json
@@ -1540,6 +1541,31 @@ def toggle_user(username: str, action: str) -> str:
     return "Пользователь включен"
 
 
+def reset_user_password_random(username: str) -> str:
+    if not valid_username(username):
+        raise ValueError("Недопустимое имя пользователя")
+
+    cfg = load_hy2_config()
+    up = cfg["auth"]["userpass"]
+    state = load_user_state()
+    disabled = state["disabled"]
+
+    new_pass = random_password()
+    if username in up:
+        up[username] = new_pass
+        write_config_with_backup_and_restart(cfg)
+        return f"Пароль пользователя {username} обновлен (рандомный)"
+
+    rec = disabled.get(username)
+    if isinstance(rec, dict):
+        rec["password"] = new_pass
+        disabled[username] = rec
+        save_user_state(state)
+        return f"Пароль пользователя {username} обновлен (клиент выключен)"
+
+    raise ValueError("Пользователь не найден")
+
+
 def delete_users(scope: str, mode: str, selected: list[str]) -> str:
     if scope not in {"active", "disabled"}:
         raise ValueError("Недопустимая область удаления")
@@ -1624,6 +1650,125 @@ def delete_users(scope: str, mode: str, selected: list[str]) -> str:
     return f"Удалено: {deleted_count}"
 
 
+def parse_log_int(value: str, default: int, min_v: int, max_v: int) -> int:
+    text = (value or "").strip()
+    if not text:
+        return default
+    num = int(text)
+    if num < min_v:
+        return min_v
+    if num > max_v:
+        return max_v
+    return num
+
+
+def read_diagnostic_logs(
+    service: str,
+    username: str,
+    query: str,
+    level: str,
+    since_minutes: int,
+    limit: int,
+) -> dict:
+    def render_log_line_html(line: str) -> str:
+        highlights: list[tuple[int, int, str]] = []
+
+        def add_matches(pattern: str, css_class: str, group_idx: int = 0):
+            for m in re.finditer(pattern, line):
+                try:
+                    s, e = m.start(group_idx), m.end(group_idx)
+                except IndexError:
+                    continue
+                if s < e:
+                    highlights.append((s, e, css_class))
+
+        # Log level token (INFO/WARN/ERROR).
+        add_matches(r"\b(INFO|WARN|ERROR)\b", "log-level")
+        # Message type after level, for example "TCP error" / "client disconnected".
+        add_matches(r"\b(?:INFO|WARN|ERROR)\b\s+(.+?)(?:\s+\{.*|\s*$)", "log-type", group_idx=1)
+        # IPv4/IPv6 + optional port.
+        add_matches(r"\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b|\[[0-9a-fA-F:]+\](?::\d+)?", "log-ip")
+        # User id value from JSON payload.
+        add_matches(r'"id"\s*:\s*"([^"]+)"', "log-user", group_idx=1)
+        # Error reason value from JSON payload.
+        add_matches(r'"error"\s*:\s*"([^"]+)"', "log-error", group_idx=1)
+
+        highlights.sort(key=lambda x: (x[0], -(x[1] - x[0])))
+        out: list[str] = []
+        pos = 0
+        for s, e, cls in highlights:
+            if s < pos:
+                continue
+            out.append(html.escape(line[pos:s]))
+            out.append(f'<span class="{cls}">{html.escape(line[s:e])}</span>')
+            pos = e
+        out.append(html.escape(line[pos:]))
+        return "".join(out)
+
+    service_map = {
+        "hysteria": ["hysteria-server.service"],
+        "admin": ["hy2-admin.service"],
+        "both": ["hysteria-server.service", "hy2-admin.service"],
+    }
+    services = service_map.get(service, service_map["both"])
+    level = (level or "all").strip().lower()
+    level_tokens = {
+        "info": [" info ", " [info] "],
+        "warn": [" warn ", " warning ", " [warn] "],
+        "error": [" error ", " failed ", " critical ", " panic ", " fatal ", " traceback ", " exception "],
+    }
+    uname = (username or "").strip().lower()
+    needle = (query or "").strip().lower()
+    lines: list[str] = []
+
+    for svc in services:
+        proc = subprocess.run(
+            [
+                "journalctl",
+                "-u",
+                svc,
+                "--since",
+                f"{since_minutes} minutes ago",
+                "--no-pager",
+                "-o",
+                "short-iso",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode != 0:
+            continue
+        for raw in proc.stdout.splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            low = line.lower()
+            if uname and uname not in low:
+                continue
+            if needle and needle not in low:
+                continue
+            if level in level_tokens and not any(tok in low for tok in level_tokens[level]):
+                continue
+            lines.append(line)
+
+    # Deduplicate and show latest first
+    uniq = list(dict.fromkeys(lines))
+    uniq.sort(reverse=True)
+    clipped = uniq[:limit]
+    return {
+        "searched": True,
+        "service": service if service in service_map else "both",
+        "level": level if level in {"all", "info", "warn", "error"} else "all",
+        "username": username,
+        "query": query,
+        "since_minutes": since_minutes,
+        "limit": limit,
+        "total": len(uniq),
+        "lines": clipped,
+        "lines_html": [render_log_line_html(x) for x in clipped],
+    }
+
+
 def base_defaults() -> dict:
     return {
         "prefix": "user-",
@@ -1643,6 +1788,12 @@ def base_defaults() -> dict:
         "speed_up_mbps_prefix": "",
         "speed_down_mbps_prefix": "",
         "max_connections_prefix": "",
+        "logs_service": "both",
+        "logs_level": "all",
+        "logs_username": "",
+        "logs_query": "",
+        "logs_since_minutes": "180",
+        "logs_limit": "200",
     }
 
 
@@ -1654,6 +1805,7 @@ def render_index_page(
     ok_message: str | None = None,
     error_message: str | None = None,
     created_urls: list[str] | None = None,
+    logs_data: dict | None = None,
 ):
     active_users, disabled_users, stats = build_users_view()
     cfg = load_hy2_config()
@@ -1674,6 +1826,7 @@ def render_index_page(
         bandwidth=read_bandwidth_settings(cfg),
         exclusions=read_server_exclusions(),
         blacklist=read_server_blacklist(),
+        logs_data=logs_data or {"searched": False, "lines": [], "lines_html": [], "total": 0},
     )
 
 
@@ -1794,6 +1947,17 @@ def users_toggle_handler():
     action = request.form.get("action", "").strip()
     try:
         msg = toggle_user(username, action)
+        return render_index_page(ok_message=msg)
+    except Exception as e:
+        return render_index_page(error_message=str(e))
+
+
+@app.route("/users/password/random", methods=["POST"])
+@requires_auth
+def users_password_random_handler():
+    username = request.form.get("username", "").strip()
+    try:
+        msg = reset_user_password_random(username)
         return render_index_page(ok_message=msg)
     except Exception as e:
         return render_index_page(error_message=str(e))
@@ -1927,6 +2091,51 @@ def server_blacklist_remove_handler():
         return render_index_page(defaults={"blacklist_ip_remove": raw}, error_message=str(e))
 
 
+@app.route("/logs/search", methods=["POST"])
+@requires_auth
+def logs_search_handler():
+    service = request.form.get("logs_service", "both").strip().lower()
+    level = request.form.get("logs_level", "all").strip().lower()
+    username = request.form.get("logs_username", "").strip()
+    query = request.form.get("logs_query", "").strip()
+    since_raw = request.form.get("logs_since_minutes", "")
+    limit_raw = request.form.get("logs_limit", "")
+    try:
+        since_minutes = parse_log_int(since_raw, default=180, min_v=5, max_v=10080)
+        limit = parse_log_int(limit_raw, default=200, min_v=20, max_v=2000)
+        logs_data = read_diagnostic_logs(
+            service=service,
+            username=username,
+            query=query,
+            level=level,
+            since_minutes=since_minutes,
+            limit=limit,
+        )
+        return render_index_page(
+            defaults={
+                "logs_service": logs_data["service"],
+                "logs_level": logs_data["level"],
+                "logs_username": username,
+                "logs_query": query,
+                "logs_since_minutes": str(since_minutes),
+                "logs_limit": str(limit),
+            },
+            logs_data=logs_data,
+        )
+    except Exception as e:
+        return render_index_page(
+            defaults={
+                "logs_service": service,
+                "logs_level": level,
+                "logs_username": username,
+                "logs_query": query,
+                "logs_since_minutes": since_raw,
+                "logs_limit": limit_raw,
+            },
+            error_message=str(e),
+        )
+
+
 @app.route("/api/live", methods=["GET"])
 @requires_auth
 def api_live_handler():
@@ -1985,7 +2194,16 @@ PYAPP
       --input-bg: #0b0d12;
       --code-bg: #0b0d12;
     }
-    body { font-family: Arial, sans-serif; margin: 16px; background: var(--bg); color: var(--text); }
+    body { font-family: Arial, sans-serif; margin: 16px; background: rgba(15, 17, 21, 0.9); color: var(--text); }
+    #bg-canvas {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 0;
+      pointer-events: none;
+    }
+    body > * { position: relative; z-index: 1; }
     .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
     textarea, input {
       width: 100%;
@@ -2131,6 +2349,22 @@ PYAPP
     .danger-btn { background: #7f1d1d; }
     .danger-btn:hover { background: #991b1b; }
     .topbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+    .brand-link {
+      display: inline-block;
+      color: #dbeafe;
+      text-decoration: none;
+      padding: 8px 14px;
+      border-radius: 12px;
+      border: 1px solid rgba(96, 165, 250, 0.45);
+      background: linear-gradient(135deg, rgba(30, 41, 59, 0.85), rgba(37, 99, 235, 0.2));
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.45), inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+      transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    .brand-link:hover {
+      transform: translateY(-1px);
+      border-color: rgba(147, 197, 253, 0.85);
+      box-shadow: 0 10px 26px rgba(37, 99, 235, 0.28), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+    }
     .secondary-btn { background: #374151; }
     .secondary-btn:hover { background: #4b5563; }
     .modal-backdrop {
@@ -2195,12 +2429,50 @@ PYAPP
       border-color: #4b5563;
     }
     .icon-link svg { width: 16px; height: 16px; fill: currentColor; }
+    .logs-tools { display: grid; grid-template-columns: repeat(3, minmax(140px, 1fr)); gap: 8px; margin-top: 8px; }
+    .logs-tools label { margin-top: 0; font-size: 12px; color: var(--muted); }
+    .logs-output {
+      width: 100%;
+      min-height: 240px;
+      white-space: pre;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      background: #0b0f1a;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+      overflow: auto;
+      line-height: 1.35;
+    }
+    .log-line { white-space: pre-wrap; word-break: break-word; margin: 0; }
+    .log-level { color: #fbbf24; font-weight: 700; }
+    .log-type { color: #93c5fd; font-weight: 600; }
+    .log-ip { color: #34d399; }
+    .log-user { color: #f9a8d4; font-weight: 600; }
+    .log-error { color: #fca5a5; }
+    #logs-modal { padding: 5vh 5vw; }
+    #logs-modal .modal-card {
+      width: 100%;
+      height: 100%;
+      max-height: none;
+      display: flex;
+      flex-direction: column;
+    }
+    #logs-modal .logs-output {
+      flex: 1 1 auto;
+      min-height: 0;
+      height: 100%;
+    }
   </style>
 </head>
 <body>
+  <canvas id="bg-canvas" aria-hidden="true"></canvas>
   <div class="topbar">
-    <h1>Hysteria2 Clients Admin</h1>
-    <button id="open-server-settings" type="button" class="secondary-btn">Настройки сервера</button>
+    <h1><a href="/" class="brand-link">Hysteria2 Clients Admin</a></h1>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <button id="open-logs-modal" type="button" class="secondary-btn">Логи</button>
+      <button id="open-server-settings" type="button" class="secondary-btn">Настройки сервера</button>
+    </div>
   </div>
   <p id="copy-status" class="copy-status"></p>
 
@@ -2292,6 +2564,61 @@ PYAPP
       </div>
       {% if blacklist.error %}
         <p class="muted">Не удалось получить черный список: {{ blacklist.error }}</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <div id="logs-modal" class="modal-backdrop" aria-hidden="true">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2>Логи диагностики</h2>
+        <button id="close-logs-modal" type="button" class="close-btn" title="Закрыть">×</button>
+      </div>
+      <form method="post" action="/logs/search">
+        <div class="logs-tools">
+          <div>
+            <label>Сервис</label>
+            <select name="logs_service">
+              <option value="both" {% if (defaults.logs_service or 'both') == 'both' %}selected{% endif %}>Hysteria + Admin</option>
+              <option value="hysteria" {% if defaults.logs_service == 'hysteria' %}selected{% endif %}>Только Hysteria</option>
+              <option value="admin" {% if defaults.logs_service == 'admin' %}selected{% endif %}>Только Admin</option>
+            </select>
+          </div>
+          <div>
+            <label>Уровень</label>
+            <select name="logs_level">
+              <option value="all" {% if (defaults.logs_level or 'all') == 'all' %}selected{% endif %}>Все</option>
+              <option value="info" {% if defaults.logs_level == 'info' %}selected{% endif %}>Info</option>
+              <option value="warn" {% if defaults.logs_level == 'warn' %}selected{% endif %}>Warn</option>
+              <option value="error" {% if defaults.logs_level == 'error' %}selected{% endif %}>Error</option>
+            </select>
+          </div>
+          <div>
+            <label>Пользователь (логин)</label>
+            <input type="text" name="logs_username" value="{{ defaults.logs_username or '' }}" placeholder="например paullo_111">
+          </div>
+        </div>
+        <div class="logs-tools">
+          <div>
+            <label>Поиск по тексту</label>
+            <input type="text" name="logs_query" value="{{ defaults.logs_query or '' }}" placeholder="timeout, TLS, disconnected...">
+          </div>
+          <div>
+            <label>Период (минут)</label>
+            <input type="number" min="5" max="10080" name="logs_since_minutes" value="{{ defaults.logs_since_minutes or '180' }}">
+          </div>
+          <div>
+            <label>Лимит строк</label>
+            <input type="number" min="20" max="2000" name="logs_limit" value="{{ defaults.logs_limit or '200' }}">
+          </div>
+        </div>
+        <div class="actions"><button type="submit">Показать логи</button></div>
+      </form>
+      {% if logs_data and logs_data.searched %}
+        <p class="muted">Найдено: {{ logs_data.total }} | Показано: {{ logs_data.lines|length }}</p>
+        <div class="logs-output">{% if logs_data.lines_html %}{% for line in logs_data.lines_html %}<div class="log-line">{{ line|safe }}</div>{% endfor %}{% else %}Нет совпадений по фильтрам.{% endif %}</div>
+      {% else %}
+        <p class="muted">Выберите фильтры и нажмите «Показать логи».</p>
       {% endif %}
     </div>
   </div>
@@ -2455,6 +2782,10 @@ PYAPP
               <input type="hidden" name="action" value="disable">
               <button type="submit" {% if u.is_protected %}disabled{% endif %}>Временно отключить</button>
             </form>
+            <form method="post" action="/users/password/random" class="inline">
+              <input type="hidden" name="username" value="{{ u.username }}">
+              <button type="submit" {% if u.is_protected %}disabled{% endif %}>Сменить пароль (рандом)</button>
+            </form>
             <p class="user-stats">
               {% if u.traffic_limit_bytes and u.traffic_limit_bytes > 0 %}Лимит трафика: {{ u.traffic_limit_h }}{% else %}Лимит трафика: нет{% endif %}
               | {% if u.duration_days %}Срок: {{ u.duration_days }} дн.{% else %}Срок: нет{% endif %}
@@ -2547,6 +2878,10 @@ PYAPP
               <input type="hidden" name="username" value="{{ u.username }}">
               <input type="hidden" name="action" value="enable">
               <button type="submit">Включить обратно</button>
+            </form>
+            <form method="post" action="/users/password/random" class="inline">
+              <input type="hidden" name="username" value="{{ u.username }}">
+              <button type="submit">Сменить пароль (рандом)</button>
             </form>
             <p class="user-stats">
               {% if u.traffic_limit_bytes and u.traffic_limit_bytes > 0 %}Лимит трафика: {{ u.traffic_limit_h }}{% else %}Лимит трафика: нет{% endif %}
@@ -2668,6 +3003,9 @@ PYAPP
       const openServerSettingsBtn = document.getElementById("open-server-settings");
       const closeServerSettingsBtn = document.getElementById("close-server-settings");
       const serverSettingsModal = document.getElementById("server-settings-modal");
+      const openLogsModalBtn = document.getElementById("open-logs-modal");
+      const closeLogsModalBtn = document.getElementById("close-logs-modal");
+      const logsModal = document.getElementById("logs-modal");
       const modeInput = document.getElementById("mode-input");
       const modeManualBtn = document.getElementById("mode-manual-btn");
       const modePrefixBtn = document.getElementById("mode-prefix-btn");
@@ -2686,6 +3024,18 @@ PYAPP
         serverSettingsModal.setAttribute("aria-hidden", "true");
       }
 
+      function openLogsModal() {
+        if (!logsModal) return;
+        logsModal.classList.add("open");
+        logsModal.setAttribute("aria-hidden", "false");
+      }
+
+      function closeLogsModal() {
+        if (!logsModal) return;
+        logsModal.classList.remove("open");
+        logsModal.setAttribute("aria-hidden", "true");
+      }
+
       if (openServerSettingsBtn) {
         openServerSettingsBtn.addEventListener("click", openServerModal);
       }
@@ -2697,9 +3047,26 @@ PYAPP
           if (e.target === serverSettingsModal) closeServerModal();
         });
       }
+      if (openLogsModalBtn) {
+        openLogsModalBtn.addEventListener("click", openLogsModal);
+      }
+      if (closeLogsModalBtn) {
+        closeLogsModalBtn.addEventListener("click", closeLogsModal);
+      }
+      if (logsModal) {
+        logsModal.addEventListener("click", function (e) {
+          if (e.target === logsModal) closeLogsModal();
+        });
+      }
       document.addEventListener("keydown", function (e) {
-        if (e.key === "Escape") closeServerModal();
+        if (e.key === "Escape") {
+          closeServerModal();
+          closeLogsModal();
+        }
       });
+      {% if logs_data and logs_data.searched %}
+      openLogsModal();
+      {% endif %}
 
       function setTab(name) {
         const active = name === "active";
@@ -2891,6 +3258,50 @@ PYAPP
       }
 
       setInterval(refreshLive, 8000);
+
+      const bgCanvas = document.getElementById("bg-canvas");
+      if (bgCanvas && bgCanvas.getContext) {
+        const ctx = bgCanvas.getContext("2d");
+        let w = 0;
+        let h = 0;
+        function resizeCanvas() {
+          w = window.innerWidth || 1;
+          h = window.innerHeight || 1;
+          bgCanvas.width = w;
+          bgCanvas.height = h;
+        }
+        function drawBackground(t) {
+          const time = t * 0.00028;
+          ctx.clearRect(0, 0, w, h);
+          const g = ctx.createLinearGradient(0, 0, w, h);
+          g.addColorStop(0, "#0b1020");
+          g.addColorStop(0.5, "#121a30");
+          g.addColorStop(1, "#0b1220");
+          ctx.fillStyle = g;
+          ctx.fillRect(0, 0, w, h);
+
+          const blobs = [
+            { x: w * (0.18 + 0.06 * Math.sin(time * 1.2)), y: h * (0.28 + 0.08 * Math.cos(time * 0.9)), r: Math.max(w, h) * 0.32, c: "rgba(56, 189, 248, 0.12)" },
+            { x: w * (0.72 + 0.05 * Math.cos(time * 1.05)), y: h * (0.38 + 0.09 * Math.sin(time * 0.8)), r: Math.max(w, h) * 0.36, c: "rgba(99, 102, 241, 0.14)" },
+            { x: w * (0.52 + 0.04 * Math.sin(time * 0.75)), y: h * (0.78 + 0.07 * Math.cos(time * 1.1)), r: Math.max(w, h) * 0.34, c: "rgba(34, 197, 94, 0.10)" }
+          ];
+
+          blobs.forEach(function (b) {
+            const rg = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, b.r);
+            rg.addColorStop(0, b.c);
+            rg.addColorStop(1, "rgba(0,0,0,0)");
+            ctx.fillStyle = rg;
+            ctx.beginPath();
+            ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+            ctx.fill();
+          });
+
+          requestAnimationFrame(drawBackground);
+        }
+        resizeCanvas();
+        window.addEventListener("resize", resizeCanvas);
+        requestAnimationFrame(drawBackground);
+      }
     })();
   </script>
 </body>

@@ -1,4 +1,5 @@
 import hashlib
+import html
 import io
 import ipaddress
 import json
@@ -1404,6 +1405,31 @@ def toggle_user(username: str, action: str) -> str:
     return "Пользователь включен"
 
 
+def reset_user_password_random(username: str) -> str:
+    if not valid_username(username):
+        raise ValueError("Недопустимое имя пользователя")
+
+    cfg = load_hy2_config()
+    up = cfg["auth"]["userpass"]
+    state = load_user_state()
+    disabled = state["disabled"]
+
+    new_pass = random_password()
+    if username in up:
+        up[username] = new_pass
+        write_config_with_backup_and_restart(cfg)
+        return f"Пароль пользователя {username} обновлен (рандомный)"
+
+    rec = disabled.get(username)
+    if isinstance(rec, dict):
+        rec["password"] = new_pass
+        disabled[username] = rec
+        save_user_state(state)
+        return f"Пароль пользователя {username} обновлен (клиент выключен)"
+
+    raise ValueError("Пользователь не найден")
+
+
 def delete_users(scope: str, mode: str, selected: list[str]) -> str:
     if scope not in {"active", "disabled"}:
         raise ValueError("Недопустимая область удаления")
@@ -1488,6 +1514,125 @@ def delete_users(scope: str, mode: str, selected: list[str]) -> str:
     return f"Удалено: {deleted_count}"
 
 
+def parse_log_int(value: str, default: int, min_v: int, max_v: int) -> int:
+    text = (value or "").strip()
+    if not text:
+        return default
+    num = int(text)
+    if num < min_v:
+        return min_v
+    if num > max_v:
+        return max_v
+    return num
+
+
+def read_diagnostic_logs(
+    service: str,
+    username: str,
+    query: str,
+    level: str,
+    since_minutes: int,
+    limit: int,
+) -> dict:
+    def render_log_line_html(line: str) -> str:
+        highlights: list[tuple[int, int, str]] = []
+
+        def add_matches(pattern: str, css_class: str, group_idx: int = 0):
+            for m in re.finditer(pattern, line):
+                try:
+                    s, e = m.start(group_idx), m.end(group_idx)
+                except IndexError:
+                    continue
+                if s < e:
+                    highlights.append((s, e, css_class))
+
+        # Log level token (INFO/WARN/ERROR).
+        add_matches(r"\b(INFO|WARN|ERROR)\b", "log-level")
+        # Message type after level, for example "TCP error" / "client disconnected".
+        add_matches(r"\b(?:INFO|WARN|ERROR)\b\s+(.+?)(?:\s+\{.*|\s*$)", "log-type", group_idx=1)
+        # IPv4/IPv6 + optional port.
+        add_matches(r"\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b|\[[0-9a-fA-F:]+\](?::\d+)?", "log-ip")
+        # User id value from JSON payload.
+        add_matches(r'"id"\s*:\s*"([^"]+)"', "log-user", group_idx=1)
+        # Error reason value from JSON payload.
+        add_matches(r'"error"\s*:\s*"([^"]+)"', "log-error", group_idx=1)
+
+        highlights.sort(key=lambda x: (x[0], -(x[1] - x[0])))
+        out: list[str] = []
+        pos = 0
+        for s, e, cls in highlights:
+            if s < pos:
+                continue
+            out.append(html.escape(line[pos:s]))
+            out.append(f'<span class="{cls}">{html.escape(line[s:e])}</span>')
+            pos = e
+        out.append(html.escape(line[pos:]))
+        return "".join(out)
+
+    service_map = {
+        "hysteria": ["hysteria-server.service"],
+        "admin": ["hy2-admin.service"],
+        "both": ["hysteria-server.service", "hy2-admin.service"],
+    }
+    services = service_map.get(service, service_map["both"])
+    level = (level or "all").strip().lower()
+    level_tokens = {
+        "info": [" info ", " [info] "],
+        "warn": [" warn ", " warning ", " [warn] "],
+        "error": [" error ", " failed ", " critical ", " panic ", " fatal ", " traceback ", " exception "],
+    }
+    uname = (username or "").strip().lower()
+    needle = (query or "").strip().lower()
+    lines: list[str] = []
+
+    for svc in services:
+        proc = subprocess.run(
+            [
+                "journalctl",
+                "-u",
+                svc,
+                "--since",
+                f"{since_minutes} minutes ago",
+                "--no-pager",
+                "-o",
+                "short-iso",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode != 0:
+            continue
+        for raw in proc.stdout.splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            low = line.lower()
+            if uname and uname not in low:
+                continue
+            if needle and needle not in low:
+                continue
+            if level in level_tokens and not any(tok in low for tok in level_tokens[level]):
+                continue
+            lines.append(line)
+
+    # Deduplicate and show latest first
+    uniq = list(dict.fromkeys(lines))
+    uniq.sort(reverse=True)
+    clipped = uniq[:limit]
+    return {
+        "searched": True,
+        "service": service if service in service_map else "both",
+        "level": level if level in {"all", "info", "warn", "error"} else "all",
+        "username": username,
+        "query": query,
+        "since_minutes": since_minutes,
+        "limit": limit,
+        "total": len(uniq),
+        "lines": clipped,
+        "lines_html": [render_log_line_html(x) for x in clipped],
+    }
+
+
 def base_defaults() -> dict:
     return {
         "prefix": "user-",
@@ -1507,6 +1652,12 @@ def base_defaults() -> dict:
         "speed_up_mbps_prefix": "",
         "speed_down_mbps_prefix": "",
         "max_connections_prefix": "",
+        "logs_service": "both",
+        "logs_level": "all",
+        "logs_username": "",
+        "logs_query": "",
+        "logs_since_minutes": "180",
+        "logs_limit": "200",
     }
 
 
@@ -1518,6 +1669,7 @@ def render_index_page(
     ok_message: str | None = None,
     error_message: str | None = None,
     created_urls: list[str] | None = None,
+    logs_data: dict | None = None,
 ):
     active_users, disabled_users, stats = build_users_view()
     cfg = load_hy2_config()
@@ -1538,6 +1690,7 @@ def render_index_page(
         bandwidth=read_bandwidth_settings(cfg),
         exclusions=read_server_exclusions(),
         blacklist=read_server_blacklist(),
+        logs_data=logs_data or {"searched": False, "lines": [], "lines_html": [], "total": 0},
     )
 
 
@@ -1658,6 +1811,17 @@ def users_toggle_handler():
     action = request.form.get("action", "").strip()
     try:
         msg = toggle_user(username, action)
+        return render_index_page(ok_message=msg)
+    except Exception as e:
+        return render_index_page(error_message=str(e))
+
+
+@app.route("/users/password/random", methods=["POST"])
+@requires_auth
+def users_password_random_handler():
+    username = request.form.get("username", "").strip()
+    try:
+        msg = reset_user_password_random(username)
         return render_index_page(ok_message=msg)
     except Exception as e:
         return render_index_page(error_message=str(e))
@@ -1789,6 +1953,51 @@ def server_blacklist_remove_handler():
         return render_index_page(ok_message=f"IP удален из черного списка: {ip}")
     except Exception as e:
         return render_index_page(defaults={"blacklist_ip_remove": raw}, error_message=str(e))
+
+
+@app.route("/logs/search", methods=["POST"])
+@requires_auth
+def logs_search_handler():
+    service = request.form.get("logs_service", "both").strip().lower()
+    level = request.form.get("logs_level", "all").strip().lower()
+    username = request.form.get("logs_username", "").strip()
+    query = request.form.get("logs_query", "").strip()
+    since_raw = request.form.get("logs_since_minutes", "")
+    limit_raw = request.form.get("logs_limit", "")
+    try:
+        since_minutes = parse_log_int(since_raw, default=180, min_v=5, max_v=10080)
+        limit = parse_log_int(limit_raw, default=200, min_v=20, max_v=2000)
+        logs_data = read_diagnostic_logs(
+            service=service,
+            username=username,
+            query=query,
+            level=level,
+            since_minutes=since_minutes,
+            limit=limit,
+        )
+        return render_index_page(
+            defaults={
+                "logs_service": logs_data["service"],
+                "logs_level": logs_data["level"],
+                "logs_username": username,
+                "logs_query": query,
+                "logs_since_minutes": str(since_minutes),
+                "logs_limit": str(limit),
+            },
+            logs_data=logs_data,
+        )
+    except Exception as e:
+        return render_index_page(
+            defaults={
+                "logs_service": service,
+                "logs_level": level,
+                "logs_username": username,
+                "logs_query": query,
+                "logs_since_minutes": since_raw,
+                "logs_limit": limit_raw,
+            },
+            error_message=str(e),
+        )
 
 
 @app.route("/api/live", methods=["GET"])
