@@ -108,7 +108,9 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hy2_admin.sh)" -- --interactive
 ```
 
-Скрипт ставит панель в `/opt/hy2-admin`, создает `hy2-admin.service`, включает защитные параметры Gunicorn (gthread, timeout, recycling воркеров), включает `ufw limit` на порт панели (если UFW активен), и выводит ссылку/логин/пароль.
+Скрипт ставит панель в `/opt/hy2-admin`, создает `hy2-admin.service`, включает защитные параметры Gunicorn (gthread, timeout, recycling воркеров), ставит **fail2ban** и создает `/etc/fail2ban/filter.d/hy2-admin-auth.conf` + `/etc/fail2ban/jail.d/hy2-admin.local` (jail по логам `hy2-admin.service` на 401), включает `ufw limit` на порт панели (если UFW активен), и выводит ссылку/логин/пароль.
+
+Если панель ставили вручную до обновления скрипта, одноразово можно донастроить fail2ban: `sudo bash scripts/setup_fail2ban_panel.sh` (из клонированного репозитория).
 
 ### Обслуживание
 

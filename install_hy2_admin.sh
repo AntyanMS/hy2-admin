@@ -32,7 +32,8 @@ is_ip() {
 }
 
 random_pass() {
-  tr -dc 'A-Za-z0-9' </dev/urandom | head -c 24
+  # Не использовать `tr | head`: при `set -o pipefail` head закрывает pipe → SIGPIPE (141) и установка падает.
+  openssl rand -hex 12
 }
 
 ask_yes_no() {
@@ -117,10 +118,41 @@ collect_interactive() {
 
 install_packages() {
   apt-get update -y
-  apt-get install -y python3 python3-venv python3-pip curl openssl
+  apt-get install -y python3 python3-venv python3-pip curl openssl fail2ban
   if [[ "${APP_SCHEME}" == "https" && "${USE_CERTBOT}" == "y" ]]; then
     apt-get install -y certbot
   fi
+}
+
+setup_fail2ban() {
+  echo "[hy2-admin install] Настройка fail2ban для панели..."
+  mkdir -p /etc/fail2ban/filter.d /etc/fail2ban/jail.d
+  cat > /etc/fail2ban/filter.d/hy2-admin-auth.conf <<'F2BFILTER'
+[Definition]
+failregex = ^.*<HOST>.*"(GET|POST|HEAD).*(HTTP/1\.[01]|HTTP/2(\.0)?)" 401 .*$
+ignoreregex =
+F2BFILTER
+
+  cat > /etc/fail2ban/jail.d/hy2-admin.local <<F2BJAIL
+[DEFAULT]
+ignoreip = 127.0.0.0/8 ::1
+
+[hy2-admin-auth]
+enabled = true
+port = ${APP_PORT}
+protocol = tcp
+backend = systemd
+journalmatch = _SYSTEMD_UNIT=${SERVICE_NAME}
+filter = hy2-admin-auth
+maxretry = 6
+findtime = 10m
+bantime = 2h
+F2BJAIL
+
+  systemctl enable fail2ban 2>/dev/null || true
+  systemctl restart fail2ban
+  sleep 2
+  fail2ban-client reload 2>/dev/null || true
 }
 
 prepare_files() {
@@ -930,7 +962,21 @@ def write_server_exclusions(items: list[str]) -> None:
     if F2B_JAIL_PATH.exists():
         text = F2B_JAIL_PATH.read_text(encoding="utf-8")
     else:
-        text = "[DEFAULT]\nignoreip = 127.0.0.0/8 ::1\n\n[hy2-admin-auth]\nenabled = true\nport = 8787\nbackend = systemd\njournalmatch = _SYSTEMD_UNIT=hy2-admin.service\nfilter = hy2-admin-auth\nmaxretry = 6\nfindtime = 10m\nbantime = 2h\n"
+        text = (
+            "[DEFAULT]\n"
+            "ignoreip = 127.0.0.0/8 ::1\n"
+            "\n"
+            "[hy2-admin-auth]\n"
+            "enabled = true\n"
+            f"port = {BIND_PORT}\n"
+            "protocol = tcp\n"
+            "backend = systemd\n"
+            "journalmatch = _SYSTEMD_UNIT=hy2-admin.service\n"
+            "filter = hy2-admin-auth\n"
+            "maxretry = 6\n"
+            "findtime = 10m\n"
+            "bantime = 2h\n"
+        )
 
     lines = text.splitlines()
     default_start = None
@@ -956,6 +1002,7 @@ def write_server_exclusions(items: list[str]) -> None:
         if not replaced:
             lines.insert(default_start + 1, f"ignoreip = {ignore_value}")
 
+    F2B_JAIL_PATH.parent.mkdir(parents=True, exist_ok=True)
     F2B_JAIL_PATH.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
     reload_res = subprocess.run(["fail2ban-client", "reload"], capture_output=True, text=True)
     if reload_res.returncode != 0:
@@ -3388,7 +3435,10 @@ service_manage() {
 open_firewall() {
   if command -v ufw >/dev/null 2>&1; then
     if ufw status 2>/dev/null | grep -qi "Status: active"; then
-      yes | ufw delete allow "${APP_PORT}/tcp" >/dev/null 2>&1 || true
+      # Без `yes | ufw`: при pipefail SIGPIPE от yes может завершить скрипт с кодом 141.
+      while ufw status 2>/dev/null | grep -qE ":${APP_PORT}/tcp| ${APP_PORT}/tcp"; do
+        ufw delete allow "${APP_PORT}/tcp" >/dev/null 2>&1 || break
+      done
       ufw limit "${APP_PORT}/tcp" >/dev/null 2>&1 || true
     fi
   fi
@@ -3418,6 +3468,7 @@ main() {
     exit 1
   fi
   install_packages
+  setup_fail2ban
   prepare_files
   write_env_file
   setup_tls

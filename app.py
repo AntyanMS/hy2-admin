@@ -794,7 +794,21 @@ def write_server_exclusions(items: list[str]) -> None:
     if F2B_JAIL_PATH.exists():
         text = F2B_JAIL_PATH.read_text(encoding="utf-8")
     else:
-        text = "[DEFAULT]\nignoreip = 127.0.0.0/8 ::1\n\n[hy2-admin-auth]\nenabled = true\nport = 8787\nbackend = systemd\njournalmatch = _SYSTEMD_UNIT=hy2-admin.service\nfilter = hy2-admin-auth\nmaxretry = 6\nfindtime = 10m\nbantime = 2h\n"
+        text = (
+            "[DEFAULT]\n"
+            "ignoreip = 127.0.0.0/8 ::1\n"
+            "\n"
+            "[hy2-admin-auth]\n"
+            "enabled = true\n"
+            f"port = {BIND_PORT}\n"
+            "protocol = tcp\n"
+            "backend = systemd\n"
+            "journalmatch = _SYSTEMD_UNIT=hy2-admin.service\n"
+            "filter = hy2-admin-auth\n"
+            "maxretry = 6\n"
+            "findtime = 10m\n"
+            "bantime = 2h\n"
+        )
 
     lines = text.splitlines()
     default_start = None
@@ -820,6 +834,7 @@ def write_server_exclusions(items: list[str]) -> None:
         if not replaced:
             lines.insert(default_start + 1, f"ignoreip = {ignore_value}")
 
+    F2B_JAIL_PATH.parent.mkdir(parents=True, exist_ok=True)
     F2B_JAIL_PATH.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
     reload_res = subprocess.run(["fail2ban-client", "reload"], capture_output=True, text=True)
     if reload_res.returncode != 0:
