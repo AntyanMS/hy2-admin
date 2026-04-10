@@ -54,6 +54,98 @@ log() { printf "[INFO] %s\n" "$*"; }
 warn() { printf "[WARN] %s\n" "$*" >&2; }
 die() { printf "[ERROR] %s\n" "$*" >&2; exit 1; }
 
+# fail2ban: сравнение SHA256; совпадение — пропуск; иначе .bak.<время> и новая версия файла.
+f2b_install_or_skip() {
+  local path="$1"
+  local tmp
+  tmp="$(mktemp)"
+  cat > "${tmp}"
+  mkdir -p "$(dirname "${path}")"
+  local want cur
+  want="$(sha256sum "${tmp}" | awk '{print $1}')"
+  if [[ -f "${path}" ]]; then
+    cur="$(sha256sum "${path}" | awk '{print $1}')"
+    if [[ "${cur}" == "${want}" ]]; then
+      rm -f "${tmp}"
+      log "fail2ban: без изменений (SHA256 совпадает): ${path}"
+      return 0
+    fi
+    local bak="${path}.bak.$(date +%Y%m%d_%H%M%S)"
+    cp -a "${path}" "${bak}"
+    log "fail2ban: резервная копия ${path} -> ${bak}"
+  fi
+  install -m 0644 "${tmp}" "${path}"
+  rm -f "${tmp}"
+  log "fail2ban: записан ${path}"
+}
+
+# Jail панели с портом по умолчанию 8787: только если файла ещё нет, или содержимое совпадает с шаблоном.
+# Если файл уже другой (например после установки панели с другим портом) — не трогаем.
+f2b_hy2_admin_jail_default_only() {
+  local path="/etc/fail2ban/jail.d/hy2-admin.local"
+  local tmp
+  tmp="$(mktemp)"
+  cat > "${tmp}" <<'F2BJAIL'
+[DEFAULT]
+ignoreip = 127.0.0.0/8 ::1 77.220.143.56 94.159.40.2 185.239.48.216 185.239.49.36
+
+[hy2-admin-auth]
+enabled = true
+port = 8787
+protocol = tcp
+backend = systemd
+journalmatch = _SYSTEMD_UNIT=hy2-admin.service
+filter = hy2-admin-auth
+maxretry = 6
+findtime = 10m
+bantime = 2h
+F2BJAIL
+  local want cur
+  want="$(sha256sum "${tmp}" | awk '{print $1}')"
+  if [[ -f "${path}" ]]; then
+    cur="$(sha256sum "${path}" | awk '{print $1}')"
+    if [[ "${cur}" == "${want}" ]]; then
+      rm -f "${tmp}"
+      log "fail2ban: без изменений (SHA256 совпадает): ${path}"
+      return 0
+    fi
+    warn "fail2ban: ${path} уже существует и отличается от шаблона VPN-установщика (часто другой порт web-панели). Файл не перезаписывается."
+    rm -f "${tmp}"
+    return 0
+  fi
+  install -m 0644 "${tmp}" "${path}"
+  rm -f "${tmp}"
+  log "fail2ban: создан ${path} (шаблон для HY2 Admin, порт 8787 по умолчанию)"
+}
+
+setup_fail2ban() {
+  log "Настройка fail2ban (обязательно)..."
+  apt-get update -y
+  apt-get install -y fail2ban
+  mkdir -p /etc/fail2ban/filter.d /etc/fail2ban/jail.d
+
+  f2b_install_or_skip /etc/fail2ban/filter.d/hy2-admin-auth.conf <<'F2BFILTER'
+[Definition]
+failregex = ^.*<HOST>.*"(GET|POST|HEAD).*(HTTP/1\.[01]|HTTP/2(\.0)?)" 401 .*$
+ignoreregex =
+F2BFILTER
+
+  f2b_install_or_skip /etc/fail2ban/jail.d/sshd-permanent-3.local <<'F2BSSH'
+[sshd]
+enabled = true
+maxretry = 3
+findtime = 10m
+bantime = -1
+F2BSSH
+
+  f2b_hy2_admin_jail_default_only
+
+  systemctl enable fail2ban 2>/dev/null || true
+  systemctl restart fail2ban
+  sleep 2
+  fail2ban-client reload 2>/dev/null || true
+}
+
 require_root() {
   if [[ "${EUID}" -ne 0 ]]; then
     die "Run as root."
@@ -298,6 +390,7 @@ main() {
   write_hysteria_config
   setup_service
   setup_ufw
+  setup_fail2ban
   print_result
 }
 

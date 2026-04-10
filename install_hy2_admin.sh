@@ -124,18 +124,45 @@ install_packages() {
   fi
 }
 
+# fail2ban: сравнение SHA256 желаемого содержимого с файлом на диске.
+# Совпадает — пропуск. Отличается — копия в path.bak.YYYYMMDD_HHMMSS, затем запись нового файла.
+f2b_install_or_skip() {
+  local path="$1"
+  local tmp
+  tmp="$(mktemp)"
+  cat > "${tmp}"
+  mkdir -p "$(dirname "${path}")"
+  local want cur
+  want="$(sha256sum "${tmp}" | awk '{print $1}')"
+  if [[ -f "${path}" ]]; then
+    cur="$(sha256sum "${path}" | awk '{print $1}')"
+    if [[ "${cur}" == "${want}" ]]; then
+      rm -f "${tmp}"
+      echo "[hy2-admin install] fail2ban: без изменений (SHA256 совпадает): ${path}"
+      return 0
+    fi
+    local bak="${path}.bak.$(date +%Y%m%d_%H%M%S)"
+    cp -a "${path}" "${bak}"
+    echo "[hy2-admin install] fail2ban: резервная копия ${path} -> ${bak}"
+  fi
+  install -m 0644 "${tmp}" "${path}"
+  rm -f "${tmp}"
+  echo "[hy2-admin install] fail2ban: записан ${path}"
+}
+
 setup_fail2ban() {
   echo "[hy2-admin install] Настройка fail2ban для панели..."
   mkdir -p /etc/fail2ban/filter.d /etc/fail2ban/jail.d
-  cat > /etc/fail2ban/filter.d/hy2-admin-auth.conf <<'F2BFILTER'
+
+  f2b_install_or_skip /etc/fail2ban/filter.d/hy2-admin-auth.conf <<'F2BFILTER'
 [Definition]
 failregex = ^.*<HOST>.*"(GET|POST|HEAD).*(HTTP/1\.[01]|HTTP/2(\.0)?)" 401 .*$
 ignoreregex =
 F2BFILTER
 
-  cat > /etc/fail2ban/jail.d/hy2-admin.local <<F2BJAIL
+  f2b_install_or_skip /etc/fail2ban/jail.d/hy2-admin.local <<F2BJAIL
 [DEFAULT]
-ignoreip = 127.0.0.0/8 ::1
+ignoreip = 127.0.0.0/8 ::1 77.220.143.56 94.159.40.2 185.239.48.216 185.239.49.36
 
 [hy2-admin-auth]
 enabled = true
@@ -148,6 +175,14 @@ maxretry = 6
 findtime = 10m
 bantime = 2h
 F2BJAIL
+
+  f2b_install_or_skip /etc/fail2ban/jail.d/sshd-permanent-3.local <<'F2BSSH'
+[sshd]
+enabled = true
+maxretry = 3
+findtime = 10m
+bantime = -1
+F2BSSH
 
   systemctl enable fail2ban 2>/dev/null || true
   systemctl restart fail2ban
@@ -225,6 +260,13 @@ TRAFFIC_STATE_PATH = Path("/opt/hy2-admin/data/traffic_state.json")
 USER_NOTES_PATH = Path("/opt/hy2-admin/data/user_notes.json")
 USER_IP_STATE_PATH = Path("/opt/hy2-admin/data/user_ip_state.json")
 F2B_JAIL_PATH = Path("/etc/fail2ban/jail.d/hy2-admin.local")
+# Всегда в ignoreip (fail2ban [DEFAULT]): SSH и панель.
+F2B_ALWAYS_IGNORE_IPS = (
+    "77.220.143.56",
+    "94.159.40.2",
+    "185.239.48.216",
+    "185.239.49.36",
+)
 
 app = Flask(__name__)
 
@@ -937,7 +979,7 @@ def normalize_exclusions(items: list[str]) -> list[str]:
     baseline = ["127.0.0.0/8", "::1"]
     out: list[str] = []
     seen: set[str] = set()
-    for item in baseline + list(items):
+    for item in baseline + list(F2B_ALWAYS_IGNORE_IPS) + list(items):
         if item not in seen:
             out.append(item)
             seen.add(item)
@@ -2576,7 +2618,7 @@ PYAPP
         <textarea name="server_exclusions" rows="6" placeholder="77.220.143.56&#10;192.168.1.0/24">{{ defaults.server_exclusions or exclusions.text or '' }}</textarea>
         <div class="actions"><button type="submit">Применить исключения</button></div>
       </form>
-      <p class="muted">Используется для `ignoreip` в fail2ban. Базовые записи `127.0.0.0/8` и `::1` сохраняются автоматически.</p>
+      <p class="muted">Используется для `ignoreip` в fail2ban. Записи `127.0.0.0/8`, `::1` и фиксированные доверенные IP добавляются автоматически при сохранении (их нельзя отключить через форму).</p>
       <hr style="border-color:#374151; opacity:.5; margin:10px 0;">
       <form method="post" action="/server/blacklist/add">
         <label>Добавить IP в черный список fail2ban</label>

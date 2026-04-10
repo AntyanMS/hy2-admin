@@ -1,73 +1,221 @@
 # Hysteria2 + HY2 Admin
 
-Единый проект из двух установщиков:
+Проект состоит из двух **самодостаточных** установщиков на Bash. Репозиторий нужен только автору и CI; **конечная установка на сервер рассчитана на запуск по сети без клонирования Git** — одной командой вида `bash -c "$(curl -fsSL …)"`.
 
-- `install_hysteria2.sh` — установка сервера Hysteria2
-- `install_hy2_admin.sh` — установка web-панели управления
+Базовый URL скриптов на GitHub (ветка `main`):
 
-✅ Протестировано на **Ubuntu 24.04**
+- `https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hysteria2.sh`
+- `https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hy2_admin.sh`
+
+Требования: **root** на сервере (например `sudo -i` или `sudo bash …`).
+
+Если после копирования с Windows скрипт выдаёт ошибку вроде `pipefail: invalid option`, в файле могли оказаться окончания строк CRLF. Исправление на сервере: `sed -i 's/\r$//' имя_скрипта.sh`.
 
 ---
 
-## 1) Установка сервера Hysteria2
+## На какой ОС тестировалось
 
-### Быстрый старт
+Основная проверка выполнялась на **Ubuntu 24.04 LTS** (ядро и окружение Debian/Ubuntu). Другие дистрибутивы могут потребовать ручной подстановки пакетов и путей (`apt` → ваш менеджер пакетов).
 
-```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hysteria2.sh)" -- --auto --domain your.domain.com --email you@example.com
+---
+
+## 1. VPN: `install_hysteria2.sh`
+
+### Что делает установщик
+
+- Обновляет пакеты (`apt update` / `apt upgrade`).
+- Ставит **Hysteria2** официальным скриптом `get.hy2.sh`.
+- Создаёт заглушку-сайт (masquerade) в `/var/www/masq`.
+- Пишет конфиг `/etc/hysteria/config.yaml` (ACME HTTP-01, TLS, первый пользователь).
+- Включает и запускает `hysteria-server.service` (по умолчанию).
+- При необходимости настраивает **UFW** (правило для SSH и для порта VPN).
+- Устанавливает и настраивает **fail2ban** (общая логика с панелью; подробности — в подразделе ниже).
+
+Порт прослушивания по умолчанию в конфиге — **443/TCP** (см. ваш итоговый `config.yaml` после установки).
+
+### Поведение fail2ban в обоих установщиках
+
+Оба скрипта считают **fail2ban** обязательным компонентом: ставится пакет `fail2ban` (через `apt`), создаются каталоги `filter.d` / `jail.d`.
+
+Для файлов **`/etc/fail2ban/filter.d/hy2-admin-auth.conf`** и **`/etc/fail2ban/jail.d/sshd-permanent-3.local`** действует одно и то же правило:
+
+- вычисляется **SHA256** желаемого содержимого (как в скрипте) и существующего файла;
+- если совпадает — запись **пропускается**;
+- если файл есть и **отличается** — он копируется в **`имя.bak.ГГГГММДД_ЧЧММСС`**, затем записывается версия из установщика (полная замена, не «слияние» строк).
+
+Файл **`/etc/fail2ban/jail.d/hy2-admin.local`** (jail панели по логам systemd):
+
+- В **`install_hy2_admin.sh`** — та же схема: сравнение SHA256, при отличии — бэкап с суффиксом `.bak.…` и запись нового содержимого с вашим портом и именем unit.
+- В **`install_hysteria2.sh`** — если файла **ещё нет**, создаётся шаблон с портом **8787** по умолчанию. Если файл **уже есть** и **не совпадает** с этим шаблоном (например панель уже ставилась с другим портом), он **не перезаписывается**, чтобы не сбить настройки панели.
+
+### Автоматическая установка (локально уже есть файл скрипта)
+
+Сценарий без вопросов: нужны домен и email для ACME. Пароль пользователя Hysteria2 можно не задавать — сгенерируется.
+
+Описание: неинтерактивный режим, параметры домена, почты и при необходимости пользователя/пароля и SSH-порта для UFW.
+
 ```
-
-### Автоматический режим
-
-```bash
 ./install_hysteria2.sh --auto --domain your.domain.com --email you@example.com
 ```
 
-### Интерактивный режим
+Описание: то же с явным пользователем, hex-паролем и нестандартным SSH-портом (если SSH не на `22`, укажите его, чтобы UFW не отрезал доступ).
 
-```bash
-./install_hysteria2.sh --interactive
 ```
-
-### Все режимы и параметры
-
-```bash
-./install_hysteria2.sh --interactive
-./install_hysteria2.sh --auto --domain your.domain.com --email you@example.com
 ./install_hysteria2.sh --auto --domain your.domain.com --email you@example.com --admin-user Admin --admin-pass 0123456789abcdef0123456789abcdef --ssh-port 22
+```
+
+Описание: переменные окружения вместо части флагов (удобно в CI).
+
+```
 DOMAIN=your.domain.com EMAIL=you@example.com ./install_hysteria2.sh --auto
 ```
 
-Пояснение по `--ssh-port`: это порт **SSH для UFW-правила доступа**, а не порт Hysteria2.
-Указывайте его, если SSH на сервере работает не на `22` (например `2222`), чтобы не потерять доступ после настройки firewall.
+### Интерактивная установка (локально уже есть файл скрипта)
 
-Поддерживаемые флаги:
+Описание: мастер задаёт домен, email, пользователя/пароль, SSH-порт и опции автозапуска/UFW в диалоге.
 
-- `--interactive`
-- `--auto`
-- `--domain <domain>`
-- `--email <email>`
-- `--admin-user <user>`
-- `--admin-pass <pass>`
-- `--ssh-port <port>`
-- `--no-autostart`
-- `--no-start`
-- `--skip-ufw`
-- `-h`, `--help`
-
-### Обслуживание
-
-```bash
-systemctl status hysteria-server.service
-systemctl restart hysteria-server.service
-journalctl -u hysteria-server.service -n 200 --no-pager
-ss -lntup | rg 443
-ufw status verbose
+```
+./install_hysteria2.sh --interactive
 ```
 
-### Удаление
+### Установка без репозитория: только `curl` (рекомендуется)
 
-```bash
+Описание: скачать и выполнить автоматический режим одной командой (подставьте свой домен и email).
+
+```
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hysteria2.sh)" -- --auto --domain your.domain.com --email you@example.com
+```
+
+Описание: скачать и выполнить интерактивный режим.
+
+```
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hysteria2.sh)" -- --interactive
+```
+
+### Как отслеживать состояние VPN и что смотреть в логах
+
+**Сервис и процесс**
+
+- `systemctl status hysteria-server.service` — активен ли юнит, последние строки журнала.
+- `journalctl -u hysteria-server.service -n 200 --no-pager` — последние события; при проблемах увеличьте `-n` или смотрите с `--since "1 hour ago"`.
+
+**На что обратить внимание**
+
+- Ошибки **ACME** / сертификата (домен не указывает на сервер, закрыт порт 80, rate limit Let’s Encrypt).
+- Строки о **listen** / bind — порт занят другим процессом.
+- Ошибки **TLS** / конфигурации после правок `config.yaml`.
+
+**Сеть и firewall**
+
+- `ss -lntup | grep 443` (или ваш порт из конфига) — слушает ли процесс.
+- `ufw status verbose` — не блокирует ли UFW нужные порты.
+
+---
+
+## 2. Web-панель: `install_hy2_admin.sh`
+
+### Что делает установщик
+
+- Создаёт каталог `/opt/hy2-admin`, виртуальное окружение Python, зависимости, **встраивает** приложение (Flask) и шаблоны из тела скрипта — отдельно клонировать репозиторий не нужно.
+- Пишет `.env`, при необходимости TLS, unit **`hy2-admin.service`** (Gunicorn).
+- Устанавливает и настраивает **fail2ban**: фильтр по HTTP **401** для журнала systemd-панели и jail; отдельно задаётся политика для **sshd** (несколько неверных попыток входа по SSH → длительный/постоянный бан по версии скрипта), плюс доверенные IP в `ignoreip` там, где это зашито в установщике.
+- При активном **UFW** добавляет ограничение/доступ на порт панели (по умолчанию **8787** — смотрите вывод установки и `.env`).
+
+Запуск от имени root обязателен (как и для VPN-установщика).
+
+### Варианты установки
+
+**Автоматическая** — переменные и флаги задаются заранее; обязательный первый аргумент: `--auto` (иначе скрипт сообщит об использовании).
+
+**Интерактивная** — вопросы в консоли (порт, Basic Auth, пути к конфигу Hysteria2 и т.д.). Если первый аргумент не указан, в начале `install_hy2_admin.sh` подставляется режим `--interactive`.
+
+Ниже — типовые команды в том виде, как их удобно копировать.
+
+### Автоматический режим (локально уже есть файл скрипта)
+
+Описание: установка панели в автоматическом режиме одной командой (параметры зависят от версии скрипта; при необходимости передайте дополнительные флаги из `--help`).
+
+```
+./install_hy2_admin.sh --auto
+```
+
+### Интерактивный режим (локально уже есть файл скрипта)
+
+Описание: пошаговый ввод настроек в терминале.
+
+```
+./install_hy2_admin.sh --interactive
+```
+
+### Установка без репозитория: только `curl`
+
+Описание: автоматическая установка панели с GitHub без клонирования репозитория.
+
+```
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hy2_admin.sh)" -- --auto
+```
+
+Описание: интерактивная установка панели тем же способом.
+
+```
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hy2_admin.sh)" -- --interactive
+```
+
+> Символ `--` после кавычек нужен, чтобы аргументы `--auto` / `--interactive` попали в скачанный скрипт, а не в оболочку.
+
+### Какие функции выполняет панель (обзор)
+
+- Учётные записи **Basic Auth** для доступа к веб-интерфейсу.
+- Управление пользователями **Hysteria2** (создание, отключение, удаление и т.д.) в привязке к `config.yaml` сервера.
+- Режимы выдачи учётных данных (**Manual** / **Prefix** и др., в зависимости от версии).
+- Генерация **QR** и ссылок клиента (`hysteria2://` …).
+- Учёт **трафика**, **онлайна**, лимитов (скорость, срок, объём, число подключений — по возможностям текущей версии).
+- **Безопасное применение** изменений конфига: резервная копия, перезапуск сервиса, откат при ошибке.
+- Разделы работы с **fail2ban** (исключения по IP, при необходимости чёрные списки) — см. интерфейс и `/etc/fail2ban`.
+
+Точный список экранов и полей соответствует установленной версии `app.py` в `/opt/hy2-admin`.
+
+### Логи панели и на что смотреть
+
+```
+journalctl -u hy2-admin.service -n 200 --no-pager
+```
+
+- Повторяющиеся **401** — неудачный вход в панель (и срабатывание fail2ban при многократных попытках).
+- **500** / трассировки Python — ошибки приложения или прав доступа к файлам.
+- Циклы **restart** в `systemctl status` — падение Gunicorn/приложения; смотрите traceback в journal.
+
+Полезные пути на сервере:
+
+- `/opt/hy2-admin/.env`
+- `/opt/hy2-admin/app.py`
+- `/etc/systemd/system/hy2-admin.service`
+- конфиг Hysteria2 (часто `/etc/hysteria/config.yaml`, путь может быть переопределён в `.env`)
+
+### Fail2ban без переустановки панели
+
+Обычно достаточно снова запустить **`install_hy2_admin.sh`** с теми же целями (он перезапишет связанные файлы fail2ban для панели). Если нужен только ручной кусок для **SSH** (пример: три попытки за окно времени и бессрочный бан), можно от root создать файл:
+
+```
+cat <<'EOF' >/etc/fail2ban/jail.d/sshd-permanent-3.local
+[sshd]
+enabled = true
+maxretry = 3
+findtime = 10m
+bantime = -1
+EOF
+fail2ban-client reload
+```
+
+Проверка: `fail2ban-client status sshd`.
+
+---
+
+## 3. Как удалить проект
+
+### Частично: только VPN (Hysteria2)
+
+```
 systemctl disable --now hysteria-server.service
 rm -f /etc/systemd/system/hysteria-server.service
 systemctl daemon-reload
@@ -75,83 +223,22 @@ rm -rf /etc/hysteria
 rm -rf /var/www/masq
 ```
 
-> Подробная инструкция по серверу: `HYSTERIA2_INSTALL.md`
+При необходимости уберите правила **UFW**, которые относились к этому серверу (`ufw status numbered`, затем `ufw delete <номер>`).
 
----
+### Частично: только web-панель
 
-## 2) Установка админки HY2 Admin
-
-### Быстрый старт
-
-```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hy2_admin.sh)" -- --auto
 ```
-
-### Автоматический режим
-
-```bash
-./install_hy2_admin.sh --auto
-```
-
-### Интерактивный режим
-
-```bash
-./install_hy2_admin.sh --interactive
-```
-
-### Все режимы и варианты запуска
-
-```bash
-./install_hy2_admin.sh --auto
-./install_hy2_admin.sh --interactive
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hy2_admin.sh)" -- --auto
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hy2_admin.sh)" -- --interactive
-```
-
-Скрипт ставит панель в `/opt/hy2-admin`, создает `hy2-admin.service`, включает защитные параметры Gunicorn (gthread, timeout, recycling воркеров), ставит **fail2ban** и создает `/etc/fail2ban/filter.d/hy2-admin-auth.conf` + `/etc/fail2ban/jail.d/hy2-admin.local` (jail по логам `hy2-admin.service` на 401), включает `ufw limit` на порт панели (если UFW активен), и выводит ссылку/логин/пароль.
-
-Если панель ставили вручную до обновления скрипта, одноразово можно донастроить fail2ban: `sudo bash scripts/setup_fail2ban_panel.sh` (из клонированного репозитория).
-
-### Обслуживание
-
-```bash
-systemctl status hy2-admin.service
-systemctl restart hy2-admin.service
-journalctl -u hy2-admin.service -n 200 --no-pager
-ss -lntp | rg 8787
-ufw status
-```
-
-Полезные пути:
-
-- `/opt/hy2-admin/app.py`
-- `/opt/hy2-admin/templates/index.html`
-- `/opt/hy2-admin/.env`
-- `/etc/systemd/system/hy2-admin.service`
-
-### Удаление
-
-```bash
 systemctl disable --now hy2-admin.service
 rm -f /etc/systemd/system/hy2-admin.service
 systemctl daemon-reload
 rm -rf /opt/hy2-admin
-yes | ufw delete limit 8787/tcp || true
-yes | ufw delete allow 8787/tcp || true
 ```
 
----
+Удалите jail/фильтр fail2ban для панели и перезагрузите fail2ban, если они больше не нужны; уберите правила UFW для порта панели.
 
-## Возможности панели
+### Полное удаление (VPN + панель)
 
-- Управление пользователями Hysteria2 (создание/отключение/включение/удаление)
-- Режимы `Manual` и `Prefix`
-- QR и `hysteria2://` ссылки
-- Статистика трафика и онлайн
-- Лимиты: трафик, срок, дата, скорость `Up/Down`, лимит подключений
-- Бейдж `xN` в свернутом списке для подключений с нескольких устройств
-- Модальное окно настройки серверного `bandwidth`
-- Безопасное применение конфига с backup + rollback
+Выполните блок «только панель», затем блок «только VPN». Проверьте `ufw status` и `fail2ban-client status`, чтобы не осталось лишних правил и jail.
 
 ---
 

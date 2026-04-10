@@ -1,3 +1,0 @@
-# Shell installers must stay LF-only (Windows CRLF breaks `set -o pipefail`).
-*.sh text eol=lf
-.gitattributes text eol=lf
