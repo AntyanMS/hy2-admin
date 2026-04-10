@@ -12,6 +12,10 @@
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hysteria2.sh)" -- --auto --domain your.domain.com --email you@example.com
 ```
 
+Перед установкой убедитесь, что **DNS-имя домена (A-запись)** указывает на **публичный IP этого сервера** — иначе выпуск сертификата Let’s Encrypt (HTTP-01 на порту **80**) может не пройти.
+
+Если копируете `install_hysteria2.sh` с Windows по SCP и получаете ошибку `pipefail: invalid option`, выполните на сервере: `sed -i 's/\r$//' install_hysteria2.sh`.
+
 ---
 
 ## Автоматический режим

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Если при запуске видите «pipefail: invalid option» — файл в CRLF (часто после копирования с Windows).
+# Исправление: sed -i 's/\r$//' install_hysteria2.sh
 set -euo pipefail
 
 # Hysteria2 one-shot installer based on your manual steps:
