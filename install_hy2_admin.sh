@@ -3289,7 +3289,7 @@ PYAPP
 
       async function refreshLive() {
         try {
-          const r = await fetch("/api/live", { cache: "no-store" });
+          const r = await fetch("/api/live", { cache: "no-store", credentials: "same-origin" });
           if (!r.ok) return;
           const data = await r.json();
           const st = data.stats || {};
@@ -3345,8 +3345,6 @@ PYAPP
           // keep UI functional even if live API temporarily unavailable
         }
       }
-
-      setInterval(refreshLive, 8000);
 
       const bgCanvas = document.getElementById("bg-canvas");
       if (bgCanvas && bgCanvas.getContext) {
