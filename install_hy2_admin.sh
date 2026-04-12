@@ -14,6 +14,8 @@ ENABLE_AUTOSTART="y"
 START_NOW="y"
 PANEL_USER="admin"
 PANEL_PASS=""
+# Секретный префикс URL панели, например /a1b2c3d4.../panel (без хвостового /)
+PANEL_URL_PREFIX=""
 
 detect_public_ip() {
   local ip=""
@@ -62,6 +64,7 @@ collect_auto() {
   APP_SCHEME="http"
   PANEL_USER="admin"
   PANEL_PASS="$(random_pass)"
+  PANEL_URL_PREFIX="/$(openssl rand -hex 16)/panel"
   ENABLE_AUTOSTART="y"
   START_NOW="y"
 }
@@ -113,6 +116,26 @@ collect_interactive() {
     if [[ -n "${custom_user}" ]]; then
       PANEL_USER="${custom_user}"
     fi
+  fi
+
+  echo ""
+  echo "Секретный путь панели (не светить в открытом виде): https://<домен>/<slug>/panel/"
+  read -r -p "Slug пути: 1) случайный  2) свой [1]: " slug_mode
+  slug_mode="${slug_mode:-1}"
+  if [[ "${slug_mode}" == "2" ]]; then
+    read -r -p "Slug (только a-z A-Z 0-9 _ -): " custom_slug
+    custom_slug="$(echo "${custom_slug}" | tr -d '/' | tr -d ' ')"
+    if [[ -z "${custom_slug}" ]]; then
+      echo "Пустой slug — генерируем случайный." >&2
+      PANEL_URL_PREFIX="/$(openssl rand -hex 16)/panel"
+    elif [[ "${custom_slug}" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+      PANEL_URL_PREFIX="/${custom_slug}/panel"
+    else
+      echo "Недопустимые символы — случайный slug." >&2
+      PANEL_URL_PREFIX="/$(openssl rand -hex 16)/panel"
+    fi
+  else
+    PANEL_URL_PREFIX="/$(openssl rand -hex 16)/panel"
   fi
 }
 
@@ -212,6 +235,7 @@ import secrets
 import shutil
 import subprocess
 import tempfile
+from typing import Optional
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
@@ -222,7 +246,7 @@ from urllib.parse import quote
 
 import qrcode
 import yaml
-from flask import Flask, Response, render_template, request
+from flask import Blueprint, Flask, Response, render_template, request
 
 
 def load_env(path: str) -> dict:
@@ -269,6 +293,31 @@ F2B_ALWAYS_IGNORE_IPS = (
 )
 
 app = Flask(__name__)
+
+
+def _normalize_panel_prefix(raw: Optional[str]) -> str:
+    """Пусто = корень (совместимость со старыми установками). Иначе /slug/... без завершающего /."""
+    if raw is None:
+        return ""
+    s = str(raw).strip()
+    if not s:
+        return ""
+    if not s.startswith("/"):
+        s = "/" + s
+    s = s.rstrip("/")
+    parts = [p for p in s.split("/") if p]
+    for p in parts:
+        if not re.match(r"^[a-zA-Z0-9_-]+$", p):
+            raise ValueError(f"Недопустимый сегмент пути панели: {p}")
+    return "/" + "/".join(parts) if parts else ""
+
+
+try:
+    PANEL_URL_PREFIX = _normalize_panel_prefix(ENV.get("PANEL_URL_PREFIX"))
+except ValueError:
+    PANEL_URL_PREFIX = ""
+
+bp = Blueprint("hy2", __name__)
 
 
 def get_protected_users() -> set[str]:
@@ -1919,13 +1968,13 @@ def render_index_page(
     )
 
 
-@app.route("/", methods=["GET"])
+@bp.route("/", methods=["GET"])
 @requires_auth
 def index():
     return render_index_page()
 
 
-@app.route("/apply", methods=["POST"])
+@bp.route("/apply", methods=["POST"])
 @requires_auth
 def apply_handler():
     mode = request.form.get("mode", "manual")
@@ -2019,7 +2068,7 @@ def apply_handler():
         )
 
 
-@app.route("/qr", methods=["GET"])
+@bp.route("/qr", methods=["GET"])
 @requires_auth
 def qr_handler():
     text = request.args.get("u", "").strip()
@@ -2029,7 +2078,7 @@ def qr_handler():
     return Response(png, mimetype="image/png")
 
 
-@app.route("/users/toggle", methods=["POST"])
+@bp.route("/users/toggle", methods=["POST"])
 @requires_auth
 def users_toggle_handler():
     username = request.form.get("username", "").strip()
@@ -2041,7 +2090,7 @@ def users_toggle_handler():
         return render_index_page(error_message=str(e))
 
 
-@app.route("/users/password/random", methods=["POST"])
+@bp.route("/users/password/random", methods=["POST"])
 @requires_auth
 def users_password_random_handler():
     username = request.form.get("username", "").strip()
@@ -2052,7 +2101,7 @@ def users_password_random_handler():
         return render_index_page(error_message=str(e))
 
 
-@app.route("/users/delete", methods=["POST"])
+@bp.route("/users/delete", methods=["POST"])
 @requires_auth
 def users_delete_handler():
     scope = request.form.get("scope", "").strip()
@@ -2065,7 +2114,7 @@ def users_delete_handler():
         return render_index_page(error_message=str(e))
 
 
-@app.route("/users/limits", methods=["POST"])
+@bp.route("/users/limits", methods=["POST"])
 @requires_auth
 def users_limits_handler():
     username = request.form.get("username", "").strip()
@@ -2097,7 +2146,7 @@ def users_limits_handler():
         return render_index_page(error_message=str(e))
 
 
-@app.route("/users/note", methods=["POST"])
+@bp.route("/users/note", methods=["POST"])
 @requires_auth
 def users_note_handler():
     username = request.form.get("username", "").strip()
@@ -2115,7 +2164,7 @@ def users_note_handler():
         return render_index_page(error_message=str(e))
 
 
-@app.route("/server/bandwidth", methods=["POST"])
+@bp.route("/server/bandwidth", methods=["POST"])
 @requires_auth
 def server_bandwidth_handler():
     up_raw = request.form.get("server_up_mbps", "")
@@ -2134,7 +2183,7 @@ def server_bandwidth_handler():
         return render_index_page(error_message=str(e))
 
 
-@app.route("/server/exclusions", methods=["POST"])
+@bp.route("/server/exclusions", methods=["POST"])
 @requires_auth
 def server_exclusions_handler():
     raw = request.form.get("server_exclusions", "")
@@ -2151,7 +2200,7 @@ def server_exclusions_handler():
         )
 
 
-@app.route("/server/blacklist/add", methods=["POST"])
+@bp.route("/server/blacklist/add", methods=["POST"])
 @requires_auth
 def server_blacklist_add_handler():
     raw = request.form.get("blacklist_ip_add", "")
@@ -2166,7 +2215,7 @@ def server_blacklist_add_handler():
         return render_index_page(defaults={"blacklist_ip_add": raw}, error_message=str(e))
 
 
-@app.route("/server/blacklist/remove", methods=["POST"])
+@bp.route("/server/blacklist/remove", methods=["POST"])
 @requires_auth
 def server_blacklist_remove_handler():
     raw = request.form.get("blacklist_ip_remove", "")
@@ -2180,7 +2229,7 @@ def server_blacklist_remove_handler():
         return render_index_page(defaults={"blacklist_ip_remove": raw}, error_message=str(e))
 
 
-@app.route("/logs/search", methods=["POST"])
+@bp.route("/logs/search", methods=["POST"])
 @requires_auth
 def logs_search_handler():
     service = request.form.get("logs_service", "both").strip().lower()
@@ -2225,7 +2274,7 @@ def logs_search_handler():
         )
 
 
-@app.route("/api/live", methods=["GET"])
+@bp.route("/api/live", methods=["GET"])
 @requires_auth
 def api_live_handler():
     active_users, disabled_users, stats = build_users_view()
@@ -2255,6 +2304,12 @@ def api_live_handler():
         "users": users,
     }
     return Response(json.dumps(payload, ensure_ascii=False), mimetype="application/json")
+
+
+if PANEL_URL_PREFIX:
+    app.register_blueprint(bp, url_prefix=PANEL_URL_PREFIX)
+else:
+    app.register_blueprint(bp)
 
 
 if __name__ == "__main__":
@@ -2557,7 +2612,7 @@ PYAPP
 <body>
   <canvas id="bg-canvas" aria-hidden="true"></canvas>
   <div class="topbar">
-    <h1><a href="/" class="brand-link">Hysteria2 Clients Admin</a></h1>
+    <h1><a href="{{ url_for('hy2.index') }}" class="brand-link">Hysteria2 Clients Admin</a></h1>
     <div style="display:flex; gap:8px; align-items:center;">
       <button id="open-logs-modal" type="button" class="secondary-btn">Логи</button>
       <button id="open-server-settings" type="button" class="secondary-btn">Настройки сервера</button>
@@ -2598,7 +2653,7 @@ PYAPP
         <h2>Настройки сервера</h2>
         <button id="close-server-settings" type="button" class="close-btn" title="Закрыть">×</button>
       </div>
-      <form method="post" action="/server/bandwidth">
+      <form method="post" action="{{ url_for('hy2.server_bandwidth_handler') }}">
         <div class="server-grid">
           <div>
             <label>Скорость Up (Mbps)</label>
@@ -2613,14 +2668,14 @@ PYAPP
       </form>
       <p class="muted">Текущий глобальный лимит Hysteria2: Up {{ bandwidth.up_raw or 'не задан' }} / Down {{ bandwidth.down_raw or 'не задан' }}</p>
       <hr style="border-color:#374151; opacity:.5; margin:10px 0;">
-      <form method="post" action="/server/exclusions">
+      <form method="post" action="{{ url_for('hy2.server_exclusions_handler') }}">
         <label>Исключения fail2ban (IP или CIDR, по одному в строке)</label>
         <textarea name="server_exclusions" rows="6" placeholder="77.220.143.56&#10;192.168.1.0/24">{{ defaults.server_exclusions or exclusions.text or '' }}</textarea>
         <div class="actions"><button type="submit">Применить исключения</button></div>
       </form>
       <p class="muted">Используется для `ignoreip` в fail2ban. Записи `127.0.0.0/8`, `::1` и фиксированные доверенные IP добавляются автоматически при сохранении (их нельзя отключить через форму).</p>
       <hr style="border-color:#374151; opacity:.5; margin:10px 0;">
-      <form method="post" action="/server/blacklist/add">
+      <form method="post" action="{{ url_for('hy2.server_blacklist_add_handler') }}">
         <label>Добавить IP в черный список fail2ban</label>
         <div class="server-grid">
           <div>
@@ -2637,7 +2692,7 @@ PYAPP
             <div class="blacklist-row">
               <div class="blacklist-ip">{{ item.ip }}</div>
               <div class="blacklist-jails">{{ item.jails|join(', ') }}</div>
-              <form method="post" action="/server/blacklist/remove" style="margin:0;">
+              <form method="post" action="{{ url_for('hy2.server_blacklist_remove_handler') }}" style="margin:0;">
                 <input type="hidden" name="blacklist_ip_remove" value="{{ item.ip }}">
                 <button type="submit" class="danger-btn">Удалить</button>
               </form>
@@ -2663,7 +2718,7 @@ PYAPP
         <h2>Логи диагностики</h2>
         <button id="close-logs-modal" type="button" class="close-btn" title="Закрыть">×</button>
       </div>
-      <form method="post" action="/logs/search">
+      <form method="post" action="{{ url_for('hy2.logs_search_handler') }}">
         <div class="logs-tools">
           <div>
             <label>Сервис</label>
@@ -2712,7 +2767,7 @@ PYAPP
     </div>
   </div>
 
-  <form method="post" action="/apply">
+  <form method="post" action="{{ url_for('hy2.apply_handler') }}">
     <input type="hidden" id="mode-input" name="mode" value="{{ defaults.mode or 'manual' }}">
     <details id="create-users-card" class="create-card">
       <summary>Создание пользователей</summary>
@@ -2818,7 +2873,7 @@ PYAPP
         <p>
           <img
             class="qr-copy"
-            src="/qr?u={{ item.url | urlencode }}"
+            src="{{ url_for('hy2.qr_handler', u=item.url) }}"
             data-url="{{ item.url }}"
             alt="QR for {{ item.username }}"
             title="Нажмите, чтобы скопировать URL"
@@ -2848,7 +2903,7 @@ PYAPP
         <option value="traffic_asc">Сортировка: трафик ↑</option>
       </select>
     </div>
-    <form id="active-delete-form" method="post" action="/users/delete">
+    <form id="active-delete-form" method="post" action="{{ url_for('hy2.users_delete_handler') }}">
       <input type="hidden" name="scope" value="active">
       <button class="danger inline" type="submit" name="mode" value="selected">Удалить выбранных</button>
       <button class="danger inline" type="submit" name="mode" value="all_except_protected">Удалить всех кроме admin</button>
@@ -2866,12 +2921,12 @@ PYAPP
         <details class="user-card" data-username="{{ u.username }}" data-total="{{ u.total }}" data-online="{{ 1 if u.is_online else 0 }}" data-disabled="0">
           <summary><span class="summary-name">{{ u.username }}{% if u.is_protected %} <span class="muted">(защищен)</span>{% endif %}{% if u.is_online %}<span class="status-dot online" data-user-dot="{{ u.username }}" title="Онлайн: {{ u.online_count }}"></span>{% else %}<span class="status-dot offline" data-user-dot="{{ u.username }}" title="Оффлайн"></span>{% endif %}{% if u.online_count and u.online_count > 1 %}<span class="conn-badge" data-user-online-count="{{ u.username }}" title="Одновременных подключений">x{{ u.online_count }}</span>{% else %}<span class="conn-badge" data-user-online-count="{{ u.username }}" style="display:none;"></span>{% endif %}<span class="summary-meta" data-user-meta="{{ u.username }}">↓ {{ u.rx_h }} | ↑ {{ u.tx_h }} | Σ {{ u.total_h }}</span></span><label class="summary-select" title="Выбрать для удаления"><input form="active-delete-form" type="checkbox" name="selected_users" value="{{ u.username }}" {% if u.is_protected %}disabled{% endif %}></label></summary>
           <div class="user-body">
-            <form method="post" action="/users/toggle" class="inline">
+            <form method="post" action="{{ url_for('hy2.users_toggle_handler') }}" class="inline">
               <input type="hidden" name="username" value="{{ u.username }}">
               <input type="hidden" name="action" value="disable">
               <button type="submit" {% if u.is_protected %}disabled{% endif %}>Временно отключить</button>
             </form>
-            <form method="post" action="/users/password/random" class="inline">
+            <form method="post" action="{{ url_for('hy2.users_password_random_handler') }}" class="inline">
               <input type="hidden" name="username" value="{{ u.username }}">
               <button type="submit" {% if u.is_protected %}disabled{% endif %}>Сменить пароль (рандом)</button>
             </form>
@@ -2898,7 +2953,7 @@ PYAPP
               <p class="user-stats" data-user-limit-text="{{ u.username }}">Остаток: {{ u.traffic_remaining_h }}</p>
               <div class="limit-bar"><div class="limit-fill {% if u.traffic_usage_percent >= 100 %}danger{% elif u.traffic_usage_percent >= 90 %}warn{% endif %}" data-user-limit-bar="{{ u.username }}" style="width: {{ u.traffic_usage_percent }}%;"></div></div>
             {% endif %}
-            <form method="post" action="/users/limits" class="edit-limits">
+            <form method="post" action="{{ url_for('hy2.users_limits_handler') }}" class="edit-limits">
               <input type="hidden" name="username" value="{{ u.username }}">
               <div class="edit-grid">
                 <div>
@@ -2930,7 +2985,7 @@ PYAPP
               </div>
               <div class="actions"><button type="submit">Редактировать лимиты</button></div>
             </form>
-            <form method="post" action="/users/note" class="user-note">
+            <form method="post" action="{{ url_for('hy2.users_note_handler') }}" class="user-note">
               <input type="hidden" name="username" value="{{ u.username }}">
               <label>Заметки по пользователю</label>
               <textarea name="note" rows="3" placeholder="Любая информация о пользователе...">{{ u.note or '' }}</textarea>
@@ -2939,7 +2994,7 @@ PYAPP
             <p>
               <img
                 class="qr-copy"
-                src="/qr?u={{ u.url | urlencode }}"
+                src="{{ url_for('hy2.qr_handler', u=u.url) }}"
                 data-url="{{ u.url }}"
                 alt="QR for {{ u.username }}"
                 title="Нажмите, чтобы скопировать URL"
@@ -2963,12 +3018,12 @@ PYAPP
           <summary>{{ u.username }}{% if u.is_protected %} <span class="muted">(защищен)</span>{% endif %}<span class="status-dot disabled" data-user-dot="{{ u.username }}" title="Клиент выключен"></span><span class="conn-badge" data-user-online-count="{{ u.username }}" style="display:none;"></span><span class="summary-meta" data-user-meta="{{ u.username }}">↓ {{ u.rx_h }} | ↑ {{ u.tx_h }} | Σ {{ u.total_h }}</span></summary>
           <div class="user-body">
             <p class="muted">Отключен: {{ u.disabled_at or 'неизвестно' }}</p>
-            <form method="post" action="/users/toggle" class="inline">
+            <form method="post" action="{{ url_for('hy2.users_toggle_handler') }}" class="inline">
               <input type="hidden" name="username" value="{{ u.username }}">
               <input type="hidden" name="action" value="enable">
               <button type="submit">Включить обратно</button>
             </form>
-            <form method="post" action="/users/password/random" class="inline">
+            <form method="post" action="{{ url_for('hy2.users_password_random_handler') }}" class="inline">
               <input type="hidden" name="username" value="{{ u.username }}">
               <button type="submit">Сменить пароль (рандом)</button>
             </form>
@@ -2998,7 +3053,7 @@ PYAPP
             {% if u.disabled_reason %}
               <p class="muted">Причина отключения: {{ u.disabled_reason }}</p>
             {% endif %}
-            <form method="post" action="/users/limits" class="edit-limits">
+            <form method="post" action="{{ url_for('hy2.users_limits_handler') }}" class="edit-limits">
               <input type="hidden" name="username" value="{{ u.username }}">
               <div class="edit-grid">
                 <div>
@@ -3030,7 +3085,7 @@ PYAPP
               </div>
               <div class="actions"><button type="submit">Редактировать лимиты</button></div>
             </form>
-            <form method="post" action="/users/note" class="user-note">
+            <form method="post" action="{{ url_for('hy2.users_note_handler') }}" class="user-note">
               <input type="hidden" name="username" value="{{ u.username }}">
               <label>Заметки по пользователю</label>
               <textarea name="note" rows="3" placeholder="Любая информация о пользователе...">{{ u.note or '' }}</textarea>
@@ -3040,7 +3095,7 @@ PYAPP
               <p>
                 <img
                   class="qr-copy"
-                  src="/qr?u={{ u.url | urlencode }}"
+                  src="{{ url_for('hy2.qr_handler', u=u.url) }}"
                   data-url="{{ u.url }}"
                   alt="QR for {{ u.username }}"
                   title="Нажмите, чтобы скопировать URL"
@@ -3289,7 +3344,7 @@ PYAPP
 
       async function refreshLive() {
         try {
-          const r = await fetch("/api/live", { cache: "no-store", credentials: "same-origin" });
+          const r = await fetch("{{ url_for('hy2.api_live_handler') }}", { cache: "no-store", credentials: "same-origin" });
           if (!r.ok) return;
           const data = await r.json();
           const st = data.stats || {};
@@ -3409,6 +3464,7 @@ PANEL_BASIC_USER=${PANEL_USER}
 PANEL_BASIC_PASS=${PANEL_PASS}
 PANEL_BIND_HOST=0.0.0.0
 PANEL_BIND_PORT=${APP_PORT}
+PANEL_URL_PREFIX=${PANEL_URL_PREFIX}
 PROTECTED_USERS=admin,Admin
 EOF
 }
@@ -3486,11 +3542,12 @@ open_firewall() {
 
 print_summary() {
   local url
-  url="${APP_SCHEME}://${APP_HOST}:${APP_PORT}/"
+  url="${APP_SCHEME}://${APP_HOST}:${APP_PORT}${PANEL_URL_PREFIX}/"
   echo
   echo "==========================================="
   echo "Установка завершена"
   echo "Панель: ${url}"
+  echo "Префикс пути (см. PANEL_URL_PREFIX в .env): ${PANEL_URL_PREFIX:-/}"
   echo "Логин: ${PANEL_USER}"
   echo "Пароль: ${PANEL_PASS}"
   echo "Сервис: ${SERVICE_NAME}"
