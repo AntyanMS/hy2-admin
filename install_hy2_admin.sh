@@ -67,6 +67,7 @@ collect_auto() {
   PANEL_URL_PREFIX="/$(openssl rand -hex 16)/panel"
   ENABLE_AUTOSTART="y"
   START_NOW="y"
+  WHITELIST_SYNC_SCHEDULE="${WHITELIST_SYNC_SCHEDULE:-daily}"
 }
 
 collect_interactive() {
@@ -214,7 +215,202 @@ F2BSSH
 }
 
 prepare_files() {
-  mkdir -p "${INSTALL_DIR}/templates" "${INSTALL_DIR}/data" "${INSTALL_DIR}/backups" "${INSTALL_DIR}/tls"
+  mkdir -p "${INSTALL_DIR}/templates" "${INSTALL_DIR}/data" "${INSTALL_DIR}/data/russia-whitelist" "${INSTALL_DIR}/backups" "${INSTALL_DIR}/tls"
+
+  cat > "${INSTALL_DIR}/whitelist_sync.py" <<'WHLSYNC'
+#!/usr/bin/env python3
+"""Скачивание hxehex/russia-mobile-internet-whitelist и сопоставление с прошлым запуском + проверка IP сервера.
+
+Не изменяет конфиг Hysteria2, userpass, /opt/hy2-admin/data/user_state.json, users_meta.json,
+clients.json и прочие файлы пользователей/лимитов — только каталог data/russia-whitelist/.
+При ошибке загрузки любого из трёх файлов предыдущие копии списков на диске остаются без изменений.
+"""
+from __future__ import annotations
+
+import hashlib
+import ipaddress
+import json
+import os
+import socket
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+INSTALL_DIR = Path("/opt/hy2-admin")
+ENV_PATH = INSTALL_DIR / ".env"
+DATA_DIR = INSTALL_DIR / "data" / "russia-whitelist"
+STATE_PATH = DATA_DIR / "state.json"
+UPSTREAM = "https://raw.githubusercontent.com/hxehex/russia-mobile-internet-whitelist/main"
+FILES = ("whitelist.txt", "ipwhitelist.txt", "cidrwhitelist.txt")
+
+
+def load_env(path: Path) -> dict[str, str]:
+    env: dict[str, str] = {}
+    if not path.exists():
+        return env
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        env[k.strip()] = v.strip()
+    return env
+
+
+def fetch(url: str, timeout: int = 120) -> bytes:
+    req = Request(url, headers={"User-Agent": "hy2-admin-whitelist-sync/1.0"})
+    with urlopen(req, timeout=timeout) as r:
+        return r.read()
+
+
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def line_count(data: bytes) -> int:
+    if not data:
+        return 0
+    return data.count(b"\n") + (0 if data.endswith(b"\n") else 1)
+
+
+def resolve_server_ip(env: dict[str, str]) -> Optional[str]:
+    explicit = (env.get("RU_WHITELIST_CHECK_IP") or "").strip()
+    if explicit:
+        try:
+            ipaddress.ip_address(explicit)
+            return explicit
+        except ValueError:
+            pass
+    host = (env.get("SERVER_HOST") or "").strip()
+    if not host:
+        return None
+    try:
+        ipaddress.ip_address(host)
+        return host
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(host, None, family=socket.AF_INET)
+            for info in infos:
+                return info[4][0]
+        except OSError:
+            return None
+    return None
+
+
+def load_ip_set(path: Path) -> set[str]:
+    s: set[str] = set()
+    if not path.exists():
+        return s
+    with path.open(encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#"):
+                s.add(line)
+    return s
+
+
+def load_cidr_list(path: Path) -> list:
+    nets = []
+    if not path.exists():
+        return nets
+    with path.open(encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            try:
+                nets.append(ipaddress.ip_network(line, strict=False))
+            except ValueError:
+                continue
+    return nets
+
+
+def ip_in_any_cidr(ip: str, nets: list) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    for n in nets:
+        if addr in n:
+            return True
+    return False
+
+
+def main() -> int:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    env = load_env(ENV_PATH)
+    prev_state: dict[str, Any] = {}
+    if STATE_PATH.exists():
+        try:
+            prev_state = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            prev_state = {}
+
+    prev_files = prev_state.get("files") or {}
+    files_out: dict[str, Any] = {}
+
+    downloaded: dict[str, bytes] = {}
+    for name in FILES:
+        url = f"{UPSTREAM}/{name}"
+        try:
+            downloaded[name] = fetch(url)
+        except (URLError, HTTPError, OSError) as e:
+            print(f"[whitelist_sync] ошибка загрузки {name}: {e}", file=sys.stderr)
+            return 1
+
+    for name, data in downloaded.items():
+        h = sha256_bytes(data)
+        lc = line_count(data)
+        prev_meta = prev_files.get(name) or {}
+        prev_hash = prev_meta.get("sha256")
+        changed = bool(prev_hash) and prev_hash != h
+        dest = DATA_DIR / name
+        tmp = DATA_DIR / f".{name}.part"
+        tmp.write_bytes(data)
+        os.replace(str(tmp), str(dest))
+        files_out[name] = {
+            "sha256": h,
+            "sha256_short": h[:12],
+            "lines": lc,
+            "bytes": len(data),
+            "changed_vs_previous": changed,
+        }
+
+    any_changed = any(files_out[n].get("changed_vs_previous") for n in files_out)
+
+    server_ip = resolve_server_ip(env)
+    in_ip: Optional[bool] = None
+    in_cidr: Optional[bool] = None
+    if server_ip:
+        ip_set = load_ip_set(DATA_DIR / "ipwhitelist.txt")
+        in_ip = server_ip in ip_set
+        nets = load_cidr_list(DATA_DIR / "cidrwhitelist.txt")
+        in_cidr = ip_in_any_cidr(server_ip, nets)
+
+    state = {
+        "last_run_utc": datetime.now(timezone.utc).isoformat(),
+        "upstream": UPSTREAM,
+        "files": files_out,
+        "any_file_changed": any_changed,
+        "server_ip_checked": server_ip,
+        "server_ip_in_ipwhitelist": in_ip,
+        "server_ip_in_cidr": in_cidr,
+    }
+    state_text = json.dumps(state, ensure_ascii=False, indent=2) + "\n"
+    state_tmp = DATA_DIR / ".state.json.part"
+    state_tmp.write_text(state_text, encoding="utf-8")
+    os.replace(str(state_tmp), str(STATE_PATH))
+    print(json.dumps(state, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+WHLSYNC
+  chmod 755 "${INSTALL_DIR}/whitelist_sync.py"
 
   cat > "${INSTALL_DIR}/requirements.txt" <<'EOF'
 Flask==3.0.3
@@ -238,6 +434,7 @@ import tempfile
 from typing import Optional
 from datetime import datetime, timedelta, timezone
 from functools import wraps
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from urllib.error import URLError
 from urllib.parse import urlsplit
@@ -263,18 +460,17 @@ def load_env(path: str) -> dict:
     return env
 
 
-ENV = load_env("/opt/hy2-admin/.env")
+ENV_PATH = Path("/opt/hy2-admin/.env")
+ENV = load_env(str(ENV_PATH))
 HY2_CONFIG = ENV.get("HY2_CONFIG_PATH", "/etc/hysteria/config.yaml")
 HY2_SERVICE = ENV.get("HY2_SERVICE_NAME", "hysteria-server.service")
 SERVER_HOST = ENV.get("SERVER_HOST", "")
 SERVER_PORT = ENV.get("SERVER_PORT", "")
 SERVER_SNI = ENV.get("SERVER_SNI", "")
 INSECURE = ENV.get("CLIENT_INSECURE", "0") == "1"
-BASIC_USER = ENV.get("PANEL_BASIC_USER", "admin")
-BASIC_PASS = ENV.get("PANEL_BASIC_PASS", "")
 BIND_HOST = ENV.get("PANEL_BIND_HOST", "127.0.0.1")
 BIND_PORT = int(ENV.get("PANEL_BIND_PORT", "8787"))
-PROTECTED_USERS_RAW = ENV.get("PROTECTED_USERS", "admin,Admin")
+PROTECTED_USERS_RAW = ENV.get("PROTECTED_USERS", "")
 
 REGISTRY_PATH = Path("/opt/hy2-admin/data/clients.json")
 BACKUP_DIR = Path("/opt/hy2-admin/backups")
@@ -283,6 +479,9 @@ META_PATH = Path("/opt/hy2-admin/data/users_meta.json")
 TRAFFIC_STATE_PATH = Path("/opt/hy2-admin/data/traffic_state.json")
 USER_NOTES_PATH = Path("/opt/hy2-admin/data/user_notes.json")
 USER_IP_STATE_PATH = Path("/opt/hy2-admin/data/user_ip_state.json")
+WHITELIST_STATE_PATH = Path("/opt/hy2-admin/data/russia-whitelist/state.json")
+WHITELIST_SYNC_SCRIPT = Path("/opt/hy2-admin/whitelist_sync.py")
+WHITELIST_VENV_PYTHON = Path("/opt/hy2-admin/.venv/bin/python")
 F2B_JAIL_PATH = Path("/etc/fail2ban/jail.d/hy2-admin.local")
 # Всегда в ignoreip (fail2ban [DEFAULT]): SSH и панель.
 F2B_ALWAYS_IGNORE_IPS = (
@@ -290,6 +489,21 @@ F2B_ALWAYS_IGNORE_IPS = (
     "94.159.40.2",
     "185.239.48.216",
     "185.239.49.36",
+)
+
+PANEL_TIMEZONE_OPTIONS = (
+    "UTC",
+    "Europe/Kaliningrad",
+    "Europe/Moscow",
+    "Europe/Samara",
+    "Asia/Yekaterinburg",
+    "Asia/Omsk",
+    "Asia/Krasnoyarsk",
+    "Asia/Irkutsk",
+    "Asia/Yakutsk",
+    "Asia/Vladivostok",
+    "Asia/Magadan",
+    "Asia/Kamchatka",
 )
 
 app = Flask(__name__)
@@ -320,6 +534,71 @@ except ValueError:
 bp = Blueprint("hy2", __name__)
 
 
+def get_panel_credentials() -> tuple[str, str]:
+    """Актуальные логин/пароль из .env (после смены через панель без перезапуска)."""
+    env = load_env(str(ENV_PATH))
+    u = (env.get("PANEL_BASIC_USER") or "admin").strip()
+    p = env.get("PANEL_BASIC_PASS") or ""
+    return u, p
+
+
+def get_panel_timezone() -> str:
+    env = load_env(str(ENV_PATH))
+    tz = (env.get("PANEL_TIMEZONE") or "Europe/Moscow").strip()
+    if tz not in PANEL_TIMEZONE_OPTIONS:
+        return "Europe/Moscow"
+    return tz
+
+
+def format_whitelist_last_sync_display(iso_str: Optional[str], tz_name: str) -> str:
+    if not iso_str or not str(iso_str).strip():
+        return ""
+    s = str(iso_str).strip()
+    try:
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        try:
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            tz = ZoneInfo("Europe/Moscow")
+        local = dt.astimezone(tz)
+        return local.strftime("%Y-%m-%d %H:%M:%S")
+    except (ValueError, OSError, TypeError):
+        return s[:19] if len(s) >= 19 else s
+
+
+def update_env_keys(keys_out: dict[str, str]) -> None:
+    path = ENV_PATH
+    if not path.exists():
+        raise RuntimeError(".env не найден")
+    raw = path.read_text(encoding="utf-8")
+    lines = raw.splitlines()
+    seen: set[str] = set()
+    out: list[str] = []
+    for line in lines:
+        s = line.strip()
+        if not s or s.startswith("#") or "=" not in line:
+            out.append(line)
+            continue
+        k = s.split("=", 1)[0].strip()
+        if k in keys_out:
+            out.append(f"{k}={keys_out[k]}")
+            seen.add(k)
+        else:
+            out.append(line)
+    for k, v in keys_out.items():
+        if k not in seen:
+            out.append(f"{k}={v}")
+    path.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+
+
+def update_panel_credentials_in_env(new_user: str, new_pass: str) -> None:
+    update_env_keys({"PANEL_BASIC_USER": new_user, "PANEL_BASIC_PASS": new_pass})
+
+
 def get_protected_users() -> set[str]:
     names = set()
     for item in PROTECTED_USERS_RAW.split(","):
@@ -336,15 +615,16 @@ def unauthorized() -> Response:
 def requires_auth(func):
     @wraps(func)
     def wrapper(*args, **kwargs):
-        if not BASIC_PASS:
+        user, pw = get_panel_credentials()
+        if not pw:
             return Response("PANEL_BASIC_PASS is not configured", status=500)
 
         auth = request.authorization
         if not auth:
             return unauthorized()
 
-        user_ok = secrets.compare_digest(auth.username or "", BASIC_USER)
-        pass_ok = secrets.compare_digest(auth.password or "", BASIC_PASS)
+        user_ok = secrets.compare_digest(auth.username or "", user)
+        pass_ok = secrets.compare_digest(auth.password or "", pw)
         if not (user_ok and pass_ok):
             return unauthorized()
         return func(*args, **kwargs)
@@ -1420,7 +1700,6 @@ def build_users_view() -> tuple[list[dict], list[dict], dict]:
     meta = load_user_meta()
     meta_users = meta["users"]
     notes = load_user_notes().get("users", {})
-    protected = get_protected_users()
     host, port, sni = infer_server_values(cfg)
     stats = get_hy2_stats(cfg)
     stats_users = stats.get("users", {})
@@ -1454,7 +1733,6 @@ def build_users_view() -> tuple[list[dict], list[dict], dict]:
         active.append(
             {
                 "username": username,
-                "is_protected": username in protected,
                 "url": make_client_url(
                     username,
                     str(password),
@@ -1530,7 +1808,6 @@ def build_users_view() -> tuple[list[dict], list[dict], dict]:
                 "username": username,
                 "disabled_at": rec.get("disabled_at", ""),
                 "disabled_reason": rec.get("reason", ""),
-                "is_protected": username in protected,
                 "url": make_client_url(
                     username,
                     str(password),
@@ -1650,11 +1927,8 @@ def toggle_user(username: str, action: str) -> str:
     up = cfg["auth"]["userpass"]
     state = load_user_state()
     disabled = state["disabled"]
-    protected = get_protected_users()
 
     if action == "disable":
-        if username in protected:
-            raise ValueError("Защищенного пользователя нельзя отключить")
         if username not in up:
             raise ValueError("Пользователь не найден среди активных")
         password = up.pop(username)
@@ -1707,7 +1981,7 @@ def reset_user_password_random(username: str) -> str:
 def delete_users(scope: str, mode: str, selected: list[str]) -> str:
     if scope not in {"active", "disabled"}:
         raise ValueError("Недопустимая область удаления")
-    if mode not in {"selected", "all_except_protected", "all"}:
+    if mode not in {"selected", "all"}:
         raise ValueError("Недопустимый режим удаления")
 
     protected = get_protected_users()
@@ -1738,8 +2012,6 @@ def delete_users(scope: str, mode: str, selected: list[str]) -> str:
     if scope == "active":
         if mode == "selected":
             targets = selected_clean
-        elif mode == "all_except_protected":
-            targets = [u for u in up.keys() if u not in protected]
         else:
             targets = list(up.keys())
 
@@ -1758,8 +2030,6 @@ def delete_users(scope: str, mode: str, selected: list[str]) -> str:
     else:
         if mode == "selected":
             targets = selected_clean
-        elif mode == "all_except_protected":
-            targets = [u for u in disabled.keys() if u not in protected]
         else:
             targets = list(disabled.keys())
 
@@ -1935,6 +2205,15 @@ def base_defaults() -> dict:
     }
 
 
+def read_whitelist_sync_state() -> dict:
+    if not WHITELIST_STATE_PATH.exists():
+        return {}
+    try:
+        return json.loads(WHITELIST_STATE_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
 def render_index_page(
     *,
     defaults: dict | None = None,
@@ -1950,6 +2229,8 @@ def render_index_page(
     merged_defaults = base_defaults()
     if isinstance(defaults, dict):
         merged_defaults.update(defaults)
+    ws = read_whitelist_sync_state()
+    ptz = get_panel_timezone()
     return render_template(
         "index.html",
         defaults=merged_defaults,
@@ -1965,6 +2246,11 @@ def render_index_page(
         exclusions=read_server_exclusions(),
         blacklist=read_server_blacklist(),
         logs_data=logs_data or {"searched": False, "lines": [], "lines_html": [], "total": 0},
+        panel_login=get_panel_credentials()[0],
+        whitelist_sync=ws,
+        whitelist_last_sync_display=format_whitelist_last_sync_display(ws.get("last_run_utc"), ptz),
+        panel_timezone=ptz,
+        panel_timezone_options=PANEL_TIMEZONE_OPTIONS,
     )
 
 
@@ -2183,6 +2469,75 @@ def server_bandwidth_handler():
         return render_index_page(error_message=str(e))
 
 
+@bp.route("/server/panel-auth", methods=["POST"])
+@requires_auth
+def server_panel_auth_handler():
+    current_pw = request.form.get("panel_current_password", "")
+    new_user = request.form.get("panel_new_user", "").strip()
+    new_pass = request.form.get("panel_new_password", "")
+    new_pass2 = request.form.get("panel_new_password_confirm", "")
+    try:
+        u, pw = get_panel_credentials()
+        if not secrets.compare_digest(current_pw, pw):
+            raise ValueError("Неверный текущий пароль")
+        if not new_user:
+            new_user = u
+        if not re.match(r"^[a-zA-Z0-9._-]{1,64}$", new_user):
+            raise ValueError("Логин: 1–64 символа (буквы, цифры, . _ -)")
+        if "\n" in new_pass or "\r" in new_pass:
+            raise ValueError("Пароль не должен содержать переводы строк")
+        if len(new_pass) < 8:
+            raise ValueError("Новый пароль: минимум 8 символов")
+        if new_pass != new_pass2:
+            raise ValueError("Повтор нового пароля не совпадает")
+        if secrets.compare_digest(new_pass, current_pw) and new_user == u:
+            raise ValueError("Укажите новый пароль или другой логин")
+        update_panel_credentials_in_env(new_user, new_pass)
+        return render_index_page(
+            ok_message="Логин и пароль панели сохранены в .env. Браузер запросит вход заново — используйте новые данные."
+        )
+    except Exception as e:
+        return render_index_page(error_message=str(e))
+
+
+@bp.route("/server/whitelist-sync", methods=["POST"])
+@requires_auth
+def server_whitelist_sync_handler():
+    try:
+        if not WHITELIST_SYNC_SCRIPT.is_file():
+            raise RuntimeError("Скрипт whitelist_sync.py не найден")
+        if not WHITELIST_VENV_PYTHON.is_file():
+            raise RuntimeError("Интерпретатор .venv не найден")
+        r = subprocess.run(
+            [str(WHITELIST_VENV_PYTHON), str(WHITELIST_SYNC_SCRIPT)],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            cwd=str(WHITELIST_SYNC_SCRIPT.parent),
+        )
+        if r.returncode != 0:
+            err = (r.stderr or r.stdout or "").strip() or f"код {r.returncode}"
+            return render_index_page(error_message=f"Whitelist: {err}")
+        return render_index_page(ok_message="Списки обновлены (проверка выполнена).")
+    except subprocess.TimeoutExpired:
+        return render_index_page(error_message="Whitelist: таймаут загрузки")
+    except Exception as e:
+        return render_index_page(error_message=str(e))
+
+
+@bp.route("/server/panel-timezone", methods=["POST"])
+@requires_auth
+def server_panel_timezone_handler():
+    tz = request.form.get("panel_timezone", "").strip()
+    try:
+        if tz not in PANEL_TIMEZONE_OPTIONS:
+            raise ValueError("Недопустимый часовой пояс")
+        update_env_keys({"PANEL_TIMEZONE": tz})
+        return render_index_page(ok_message=f"Часовой пояс панели: {tz}")
+    except Exception as e:
+        return render_index_page(error_message=str(e))
+
+
 @bp.route("/server/exclusions", methods=["POST"])
 @requires_auth
 def server_exclusions_handler():
@@ -2379,6 +2734,16 @@ PYAPP
     code { word-break: break-all; background: var(--code-bg); padding: 2px 4px; border-radius: 4px; }
     img { border: 1px solid var(--border); border-radius: 6px; padding: 6px; background: #fff; }
     .muted { color: var(--muted); }
+    .wl-block { margin: 8px 0 12px; }
+    .wl-line { display: flex; align-items: center; gap: 10px; margin: 8px 0; flex-wrap: wrap; }
+    .wl-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+    .wl-dot.wl-ok { background: #22c55e; box-shadow: 0 0 6px rgba(34,197,94,0.45); }
+    .wl-dot.wl-no { background: #6b7280; }
+    .wl-name { flex: 1; min-width: 140px; font-size: 0.95rem; }
+    .wl-check-form { margin: 0; }
+    .wl-check-form button { padding: 4px 12px; font-size: 0.85rem; }
+    .wl-tz-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 10px 0 8px; font-size: 0.9rem; }
+    .wl-tz-row select { padding: 6px 8px; border-radius: 6px; background: var(--bg-soft); color: inherit; border: 1px solid var(--border); min-width: 200px; }
     .danger { background: #b91c1c; }
     .danger:hover { background: #991b1b; }
     .inline { display: inline-block; margin-right: 6px; }
@@ -2668,6 +3033,66 @@ PYAPP
       </form>
       <p class="muted">Текущий глобальный лимит Hysteria2: Up {{ bandwidth.up_raw or 'не задан' }} / Down {{ bandwidth.down_raw or 'не задан' }}</p>
       <hr style="border-color:#374151; opacity:.5; margin:10px 0;">
+      <h3 style="margin:0 0 8px; font-size:1rem;">Белый список РФ (моб. интернет)</h3>
+      {% set wlf = whitelist_sync.get('files') or {} %}
+      <div class="wl-block">
+        <div class="wl-line">
+          <span class="wl-dot {% if wlf.get('whitelist.txt') %}wl-ok{% else %}wl-no{% endif %}" title="{% if wlf.get('whitelist.txt') %}есть актуальная копия{% else %}ещё не синхронизировано{% endif %}"></span>
+          <span class="wl-name">Домены · whitelist.txt</span>
+          <form class="wl-check-form" method="post" action="{{ url_for('hy2.server_whitelist_sync_handler') }}"><button type="submit" class="secondary-btn">Проверка</button></form>
+        </div>
+        <div class="wl-line">
+          <span class="wl-dot {% if wlf.get('ipwhitelist.txt') %}wl-ok{% else %}wl-no{% endif %}" title="{% if wlf.get('ipwhitelist.txt') %}есть актуальная копия{% else %}ещё не синхронизировано{% endif %}"></span>
+          <span class="wl-name">IP · ipwhitelist.txt</span>
+          <form class="wl-check-form" method="post" action="{{ url_for('hy2.server_whitelist_sync_handler') }}"><button type="submit" class="secondary-btn">Проверка</button></form>
+        </div>
+        <div class="wl-line">
+          <span class="wl-dot {% if wlf.get('cidrwhitelist.txt') %}wl-ok{% else %}wl-no{% endif %}" title="{% if wlf.get('cidrwhitelist.txt') %}есть актуальная копия{% else %}ещё не синхронизировано{% endif %}"></span>
+          <span class="wl-name">Подсети · cidrwhitelist.txt</span>
+          <form class="wl-check-form" method="post" action="{{ url_for('hy2.server_whitelist_sync_handler') }}"><button type="submit" class="secondary-btn">Проверка</button></form>
+        </div>
+      </div>
+      <form method="post" action="{{ url_for('hy2.server_panel_timezone_handler') }}" class="wl-tz-row">
+        <label class="muted" for="panel-timezone-select">Часовой пояс</label>
+        <select id="panel-timezone-select" name="panel_timezone">
+          {% for z in panel_timezone_options %}
+          <option value="{{ z }}" {% if z == panel_timezone %}selected{% endif %}>{{ z }}</option>
+          {% endfor %}
+        </select>
+        <button type="submit" class="secondary-btn">Сохранить</button>
+      </form>
+      {% if whitelist_last_sync_display %}
+        <p class="muted" style="margin:0; font-size:0.8rem;">Последняя синхронизация: {{ whitelist_last_sync_display }}{% if whitelist_sync.get('server_ip_checked') %} · IP {{ whitelist_sync.server_ip_checked }}: ipwhitelist {% if whitelist_sync.server_ip_in_ipwhitelist %}да{% else %}нет{% endif %}, cidr {% if whitelist_sync.server_ip_in_cidr %}да{% else %}нет{% endif %}{% endif %}</p>
+      {% else %}
+        <p class="muted" style="margin:0; font-size:0.8rem;">Нажмите «Проверка» или дождитесь таймера.</p>
+      {% endif %}
+      <hr style="border-color:#374151; opacity:.5; margin:10px 0;">
+      <h3 style="margin:0 0 8px; font-size:1rem;">Вход в панель (Basic Auth)</h3>
+      <p class="muted" style="margin:0 0 10px;">Сейчас логин: <strong>{{ panel_login }}</strong>. Меняется запись в `/opt/hy2-admin/.env`.</p>
+      <form method="post" action="{{ url_for('hy2.server_panel_auth_handler') }}" autocomplete="off">
+        <div class="server-grid">
+          <div>
+            <label>Новый логин</label>
+            <input type="text" name="panel_new_user" value="{{ panel_login }}" placeholder="admin" maxlength="64">
+          </div>
+          <div>
+            <label>Текущий пароль</label>
+            <input type="password" name="panel_current_password" required placeholder="обязательно">
+          </div>
+        </div>
+        <div class="server-grid">
+          <div>
+            <label>Новый пароль (мин. 8 символов)</label>
+            <input type="password" name="panel_new_password" placeholder="новый пароль" required minlength="8" autocomplete="new-password">
+          </div>
+          <div>
+            <label>Повтор нового пароля</label>
+            <input type="password" name="panel_new_password_confirm" placeholder="ещё раз" required minlength="8" autocomplete="new-password">
+          </div>
+        </div>
+        <div class="actions"><button type="submit">Сохранить логин и пароль</button></div>
+      </form>
+      <hr style="border-color:#374151; opacity:.5; margin:10px 0;">
       <form method="post" action="{{ url_for('hy2.server_exclusions_handler') }}">
         <label>Исключения fail2ban (IP или CIDR, по одному в строке)</label>
         <textarea name="server_exclusions" rows="6" placeholder="77.220.143.56&#10;192.168.1.0/24">{{ defaults.server_exclusions or exclusions.text or '' }}</textarea>
@@ -2906,7 +3331,6 @@ PYAPP
     <form id="active-delete-form" method="post" action="{{ url_for('hy2.users_delete_handler') }}">
       <input type="hidden" name="scope" value="active">
       <button class="danger inline" type="submit" name="mode" value="selected">Удалить выбранных</button>
-      <button class="danger inline" type="submit" name="mode" value="all_except_protected">Удалить всех кроме admin</button>
     </form>
   </div>
 
@@ -2919,16 +3343,16 @@ PYAPP
     {% if active_users %}
       {% for u in active_users %}
         <details class="user-card" data-username="{{ u.username }}" data-total="{{ u.total }}" data-online="{{ 1 if u.is_online else 0 }}" data-disabled="0">
-          <summary><span class="summary-name">{{ u.username }}{% if u.is_protected %} <span class="muted">(защищен)</span>{% endif %}{% if u.is_online %}<span class="status-dot online" data-user-dot="{{ u.username }}" title="Онлайн: {{ u.online_count }}"></span>{% else %}<span class="status-dot offline" data-user-dot="{{ u.username }}" title="Оффлайн"></span>{% endif %}{% if u.online_count and u.online_count > 1 %}<span class="conn-badge" data-user-online-count="{{ u.username }}" title="Одновременных подключений">x{{ u.online_count }}</span>{% else %}<span class="conn-badge" data-user-online-count="{{ u.username }}" style="display:none;"></span>{% endif %}<span class="summary-meta" data-user-meta="{{ u.username }}">↓ {{ u.rx_h }} | ↑ {{ u.tx_h }} | Σ {{ u.total_h }}</span></span><label class="summary-select" title="Выбрать для удаления"><input form="active-delete-form" type="checkbox" name="selected_users" value="{{ u.username }}" {% if u.is_protected %}disabled{% endif %}></label></summary>
+          <summary><span class="summary-name">{{ u.username }}{% if u.is_online %}<span class="status-dot online" data-user-dot="{{ u.username }}" title="Онлайн: {{ u.online_count }}"></span>{% else %}<span class="status-dot offline" data-user-dot="{{ u.username }}" title="Оффлайн"></span>{% endif %}{% if u.online_count and u.online_count > 1 %}<span class="conn-badge" data-user-online-count="{{ u.username }}" title="Одновременных подключений">x{{ u.online_count }}</span>{% else %}<span class="conn-badge" data-user-online-count="{{ u.username }}" style="display:none;"></span>{% endif %}<span class="summary-meta" data-user-meta="{{ u.username }}">↓ {{ u.rx_h }} | ↑ {{ u.tx_h }} | Σ {{ u.total_h }}</span></span><label class="summary-select" title="Выбрать для удаления"><input form="active-delete-form" type="checkbox" name="selected_users" value="{{ u.username }}"></label></summary>
           <div class="user-body">
             <form method="post" action="{{ url_for('hy2.users_toggle_handler') }}" class="inline">
               <input type="hidden" name="username" value="{{ u.username }}">
               <input type="hidden" name="action" value="disable">
-              <button type="submit" {% if u.is_protected %}disabled{% endif %}>Временно отключить</button>
+              <button type="submit">Временно отключить</button>
             </form>
             <form method="post" action="{{ url_for('hy2.users_password_random_handler') }}" class="inline">
               <input type="hidden" name="username" value="{{ u.username }}">
-              <button type="submit" {% if u.is_protected %}disabled{% endif %}>Сменить пароль (рандом)</button>
+              <button type="submit">Сменить пароль (рандом)</button>
             </form>
             <p class="user-stats">
               {% if u.traffic_limit_bytes and u.traffic_limit_bytes > 0 %}Лимит трафика: {{ u.traffic_limit_h }}{% else %}Лимит трафика: нет{% endif %}
@@ -3015,7 +3439,7 @@ PYAPP
     {% if disabled_users %}
       {% for u in disabled_users %}
         <details class="user-card" data-username="{{ u.username }}" data-total="{{ u.total }}" data-online="0" data-disabled="1">
-          <summary>{{ u.username }}{% if u.is_protected %} <span class="muted">(защищен)</span>{% endif %}<span class="status-dot disabled" data-user-dot="{{ u.username }}" title="Клиент выключен"></span><span class="conn-badge" data-user-online-count="{{ u.username }}" style="display:none;"></span><span class="summary-meta" data-user-meta="{{ u.username }}">↓ {{ u.rx_h }} | ↑ {{ u.tx_h }} | Σ {{ u.total_h }}</span></summary>
+          <summary>{{ u.username }}<span class="status-dot disabled" data-user-dot="{{ u.username }}" title="Клиент выключен"></span><span class="conn-badge" data-user-online-count="{{ u.username }}" style="display:none;"></span><span class="summary-meta" data-user-meta="{{ u.username }}">↓ {{ u.rx_h }} | ↑ {{ u.tx_h }} | Σ {{ u.total_h }}</span></summary>
           <div class="user-body">
             <p class="muted">Отключен: {{ u.disabled_at or 'неизвестно' }}</p>
             <form method="post" action="{{ url_for('hy2.users_toggle_handler') }}" class="inline">
@@ -3465,8 +3889,47 @@ PANEL_BASIC_PASS=${PANEL_PASS}
 PANEL_BIND_HOST=0.0.0.0
 PANEL_BIND_PORT=${APP_PORT}
 PANEL_URL_PREFIX=${PANEL_URL_PREFIX}
-PROTECTED_USERS=admin,Admin
+PROTECTED_USERS=
+RU_WHITELIST_SYNC_SCHEDULE=${WHITELIST_SYNC_SCHEDULE:-daily}
+PANEL_TIMEZONE=Europe/Moscow
 EOF
+}
+
+write_whitelist_sync_systemd() {
+  mkdir -p "${INSTALL_DIR}/data/russia-whitelist"
+  local cal
+  if [[ "${WHITELIST_SYNC_SCHEDULE:-daily}" == "weekly" ]]; then
+    cal="OnCalendar=Sun *-*-* 04:15:00"
+  else
+    cal="OnCalendar=*-*-* 04:15:00"
+  fi
+  cat > "/etc/systemd/system/hy2-whitelist-sync.service" <<EOF
+[Unit]
+Description=HY2 Admin: sync Russia mobile internet whitelist (GitHub)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=${INSTALL_DIR}
+ExecStart=${INSTALL_DIR}/.venv/bin/python ${INSTALL_DIR}/whitelist_sync.py
+User=root
+EOF
+  cat > "/etc/systemd/system/hy2-whitelist-sync.timer" <<EOF
+[Unit]
+Description=Timer: russia-mobile-internet-whitelist (${WHITELIST_SYNC_SCHEDULE:-daily})
+
+[Timer]
+${cal}
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload
+  systemctl enable hy2-whitelist-sync.timer 2>/dev/null || true
+  systemctl start hy2-whitelist-sync.timer 2>/dev/null || true
 }
 
 setup_tls() {
@@ -3551,6 +4014,7 @@ print_summary() {
   echo "Логин: ${PANEL_USER}"
   echo "Пароль: ${PANEL_PASS}"
   echo "Сервис: ${SERVICE_NAME}"
+  echo "Whitelist РФ: таймер hy2-whitelist-sync.timer (${WHITELIST_SYNC_SCHEDULE:-daily}), файлы: ${INSTALL_DIR}/data/russia-whitelist/"
   echo "==========================================="
 }
 
@@ -3564,6 +4028,7 @@ main() {
     echo "Использование: $0 [--auto|--interactive]" >&2
     exit 1
   fi
+  WHITELIST_SYNC_SCHEDULE="${WHITELIST_SYNC_SCHEDULE:-daily}"
   install_packages
   setup_fail2ban
   prepare_files
@@ -3571,6 +4036,8 @@ main() {
   setup_tls
   write_service
   install_python_deps
+  write_whitelist_sync_systemd
+  "${INSTALL_DIR}/.venv/bin/python" "${INSTALL_DIR}/whitelist_sync.py" || true
   open_firewall
   service_manage
   print_summary

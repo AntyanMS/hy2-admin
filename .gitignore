@@ -1,0 +1,4 @@
+# Локальные копии панели; каноническая версия в heredoc внутри install_hy2_admin.sh
+/app.py
+/whitelist_sync.py
+/templates/
