@@ -1,11 +1,23 @@
 # Hysteria2 + HY2 Admin
 
-Проект состоит из двух **самодостаточных** установщиков на Bash. Репозиторий нужен только автору и CI; **конечная установка на сервер рассчитана на запуск по сети без клонирования Git** — одной командой вида `bash -c "$(curl -fsSL …)"`.
+Проект состоит из двух **самодостаточных** установщиков на Bash. Для сервера обычно достаточно **одной команды с `curl`**, без клонирования репозитория.
+
+## Где что лежит (чтобы не путаться)
+
+| Файл / раздел | Назначение |
+|---------------|------------|
+| **Этот README** | Обзор: VPN + панель, ссылки на скрипты и на детальную установку панели |
+| [**INSTALL.md**](INSTALL.md) | Установка **веб-панели**: бинарник из [Releases](https://github.com/AntyanMS/hy2-admin/releases), сборка, переменные `HY2_GITHUB_REPO` |
+| [**docs/CASCADE.md**](docs/CASCADE.md) | Заметки по каскаду / mskgw (черновик) |
+
+Главная страница репозитория на GitHub показывает именно **README.md** — это нормально: краткое описание здесь, детали панели в **INSTALL.md**.
 
 Базовый URL скриптов на GitHub (ветка `main`):
 
-- `https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hysteria2.sh`
-- `https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/heads/main/install_hy2_admin.sh`
+- `https://raw.githubusercontent.com/AntyanMS/hy2-admin/main/install_hysteria2.sh`
+- `https://raw.githubusercontent.com/AntyanMS/hy2-admin/main/install_hy2_admin.sh`
+
+(Работает и вариант с `/refs/heads/main/` в пути — редирект тот же.)
 
 Требования: **root** на сервере (например `sudo -i` или `sudo bash …`).
 
@@ -114,10 +126,20 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/
 
 ## 2. Web-панель: `install_hy2_admin.sh`
 
-### Что делает установщик
+### Режим по умолчанию (рекомендуется): готовый бинарник
 
-- Создаёт каталог `/opt/hy2-admin`, виртуальное окружение Python, зависимости, **встраивает** приложение (Flask) и шаблоны из тела скрипта — отдельно клонировать репозиторий не нужно.
-- Пишет `.env`, при необходимости TLS, unit **`hy2-admin.service`** (Gunicorn).
+По умолчанию (`USE_PANEL_BINARY=1`) установщик **скачивает** однофайловый `hy2-admin-panel` из [GitHub Releases](https://github.com/AntyanMS/hy2-admin/releases) (файл **`hy2-admin-panel-linux-amd64`**). Отдельный Python-venv под панель **не** создаётся; веб-сервер внутри бинарника — **Waitress** (HTTP) или **Hypercorn** (HTTPS, если в `.env` заданы `PANEL_TLS_CERT` / `PANEL_TLS_KEY`).
+
+Подробности, однострочник и переменные (`HY2_GITHUB_REPO`, офлайн-установка) — в [**INSTALL.md**](INSTALL.md).
+
+### Устаревший режим: только Python из скрипта
+
+Если задать **`USE_PANEL_BINARY=0`**, установщик ведёт себя по старой схеме: создаёт `/opt/hy2-admin`, venv, ставит зависимости и **встраивает** приложение Flask и шаблоны из тела `install_hy2_admin.sh`, unit с **Gunicorn**.
+
+### Что делает установщик (общее)
+
+- Рабочий каталог **`/opt/hy2-admin`**, файл **`whitelist_sync.py`**, данные в **`data/`** и т.д.
+- Пишет `.env`, при необходимости TLS (для бинарника — пути к сертификатам в `.env`), unit **`hy2-admin.service`**.
 - Устанавливает и настраивает **fail2ban**: фильтр по HTTP **401** для журнала systemd-панели и jail; отдельно задаётся политика для **sshd** (несколько неверных попыток входа по SSH → длительный/постоянный бан по версии скрипта), плюс доверенные IP в `ignoreip` там, где это зашито в установщике.
 - При активном **UFW** добавляет ограничение/доступ на порт панели (по умолчанию **8787** — смотрите вывод установки и `.env`).
 - Задаёт **скрытый префикс URL** вида `/<случайный-или-свой-slug>/panel`: панель открывается как `https://<домен>:<порт><PANEL_URL_PREFIX>/` (значение пишется в `/opt/hy2-admin/.env`). Старые установки без `PANEL_URL_PREFIX` в `.env` по-прежнему работают с корня `/`.
@@ -180,7 +202,7 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/AntyanMS/hy2-admin/refs/
 - **Безопасное применение** изменений конфига: резервная копия, перезапуск сервиса, откат при ошибке.
 - Разделы работы с **fail2ban** (исключения по IP, при необходимости чёрные списки) — см. интерфейс и `/etc/fail2ban`.
 
-Точный список экранов и полей соответствует установленной версии `app.py` в `/opt/hy2-admin`.
+Точный список экранов и полей соответствует версии панели на сервере; при режиме бинарника исходники лежат только в релизе/репозитории, в `/opt/hy2-admin/` — исполняемый файл и данные.
 
 ### Логи панели и на что смотреть
 
@@ -190,12 +212,12 @@ journalctl -u hy2-admin.service -n 200 --no-pager
 
 - Повторяющиеся **401** — неудачный вход в панель (и срабатывание fail2ban при многократных попытках).
 - **500** / трассировки Python — ошибки приложения или прав доступа к файлам.
-- Циклы **restart** в `systemctl status` — падение Gunicorn/приложения; смотрите traceback в journal.
+- Циклы **restart** в `systemctl status` — падение процесса панели; смотрите traceback в journal.
 
 Полезные пути на сервере:
 
 - `/opt/hy2-admin/.env`
-- `/opt/hy2-admin/app.py`
+- `/opt/hy2-admin/hy2-admin-panel` — бинарник панели (режим по умолчанию); при **`USE_PANEL_BINARY=0`** вместо него — `app.py` и venv + Gunicorn
 - `/etc/systemd/system/hy2-admin.service`
 - конфиг Hysteria2 (часто `/etc/hysteria/config.yaml`, путь может быть переопределён в `.env`)
 
