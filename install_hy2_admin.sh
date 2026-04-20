@@ -1,5 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
+#
+# Целевая последовательность развёртывания (единый интерактивный установщик — в разработке):
+#  1) ОС: пакеты (curl, openssl, nginx, certbot, fail2ban, ufw при необходимости).
+#  2) Hysteria2: официальный бинарь + unit + /etc/hysteria/config.yaml (не Python venv).
+#  3) Веб-панель: Python venv только для Gunicorn/Flask в /opt/hy2-admin (это не «сборка сервера VPN»).
+#  4) TLS: certbot или self-signed; панель по умолчанию только HTTPS (за nginx или с TLS на порту).
+#  5) Nginx: reverse proxy на панель, заглушка на / при необходимости.
+#  6) fail2ban: jail для панели (и ssh по политике скрипта).
+#  7) Вывод: URL панели, PANEL_URL_PREFIX, логин/пароль, таймер whitelist.
+#
+# Удаление: ./install_hy2_admin.sh --uninstall  (или --remove)
+#
 
 MODE="${1:---interactive}"
 
@@ -16,6 +28,10 @@ PANEL_USER="admin"
 PANEL_PASS=""
 # Секретный префикс URL панели, например /a1b2c3d4.../panel (без хвостового /)
 PANEL_URL_PREFIX=""
+# 1 = скачать однофайловый бинарь панели (релиз GitHub); 0 = классический режим Python venv + встроенные исходники в этом скрипте
+USE_PANEL_BINARY="${USE_PANEL_BINARY:-1}"
+# Репозиторий для releases/latest/download/hy2-admin-panel-linux-amd64 (укажите свой форк/организацию)
+HY2_GITHUB_REPO="${HY2_GITHUB_REPO:-AntyanMS/hy2-admin}"
 
 detect_public_ip() {
   local ip=""
@@ -212,6 +228,23 @@ F2BSSH
   systemctl restart fail2ban
   sleep 2
   fail2ban-client reload 2>/dev/null || true
+}
+
+download_hy2_panel_binary() {
+  local dest="${INSTALL_DIR}/hy2-admin-panel"
+  if [[ -n "${HY2_PANEL_LOCAL_BINARY:-}" && -f "${HY2_PANEL_LOCAL_BINARY}" ]]; then
+    echo "[hy2-admin install] копирование локального бинарника: ${HY2_PANEL_LOCAL_BINARY} -> ${dest}"
+    install -m 755 "${HY2_PANEL_LOCAL_BINARY}" "${dest}"
+    return 0
+  fi
+  local url="${HY2_PANEL_BINARY_URL:-}"
+  if [[ -z "${url}" ]]; then
+    url="https://github.com/${HY2_GITHUB_REPO}/releases/latest/download/hy2-admin-panel-linux-amd64"
+  fi
+  echo "[hy2-admin install] загрузка панели (бинарь): ${url}"
+  curl -fSL --retry 3 -o "${dest}.tmp" "${url}"
+  mv "${dest}.tmp" "${dest}"
+  chmod 755 "${dest}"
 }
 
 prepare_files() {
@@ -412,6 +445,12 @@ if __name__ == "__main__":
 WHLSYNC
   chmod 755 "${INSTALL_DIR}/whitelist_sync.py"
 
+  if [[ "${USE_PANEL_BINARY:-1}" == "1" ]]; then
+    download_hy2_panel_binary
+    HY2_WHITELIST_PY="/usr/bin/python3"
+    return
+  fi
+
   cat > "${INSTALL_DIR}/requirements.txt" <<'EOF'
 Flask==3.0.3
 PyYAML==6.0.2
@@ -471,6 +510,7 @@ INSECURE = ENV.get("CLIENT_INSECURE", "0") == "1"
 BIND_HOST = ENV.get("PANEL_BIND_HOST", "127.0.0.1")
 BIND_PORT = int(ENV.get("PANEL_BIND_PORT", "8787"))
 PROTECTED_USERS_RAW = ENV.get("PROTECTED_USERS", "")
+SING_BOX_CONFIG_PATH = ENV.get("SING_BOX_CONFIG_PATH", "/etc/sing-box/config.json")
 
 REGISTRY_PATH = Path("/opt/hy2-admin/data/clients.json")
 BACKUP_DIR = Path("/opt/hy2-admin/backups")
@@ -481,7 +521,23 @@ USER_NOTES_PATH = Path("/opt/hy2-admin/data/user_notes.json")
 USER_IP_STATE_PATH = Path("/opt/hy2-admin/data/user_ip_state.json")
 WHITELIST_STATE_PATH = Path("/opt/hy2-admin/data/russia-whitelist/state.json")
 WHITELIST_SYNC_SCRIPT = Path("/opt/hy2-admin/whitelist_sync.py")
-WHITELIST_VENV_PYTHON = Path("/opt/hy2-admin/.venv/bin/python")
+
+
+def _app_root() -> Path:
+    return Path(__file__).resolve().parent
+
+
+def _whitelist_python() -> Path:
+    explicit = (ENV.get("WHITELIST_PYTHON") or "").strip()
+    if explicit:
+        return Path(explicit)
+    venv_py = Path("/opt/hy2-admin/.venv/bin/python")
+    if venv_py.is_file():
+        return venv_py
+    return Path("/usr/bin/python3")
+
+
+WHITELIST_PYTHON = _whitelist_python()
 F2B_JAIL_PATH = Path("/etc/fail2ban/jail.d/hy2-admin.local")
 # Всегда в ignoreip (fail2ban [DEFAULT]): SSH и панель.
 F2B_ALWAYS_IGNORE_IPS = (
@@ -506,7 +562,7 @@ PANEL_TIMEZONE_OPTIONS = (
     "Asia/Kamchatka",
 )
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder=str(_app_root() / "templates"))
 
 
 def _normalize_panel_prefix(raw: Optional[str]) -> str:
@@ -532,6 +588,11 @@ except ValueError:
     PANEL_URL_PREFIX = ""
 
 bp = Blueprint("hy2", __name__)
+
+
+def is_sing_box_readonly_panel() -> bool:
+    raw = (ENV.get("PANEL_BACKEND") or "hysteria").strip().lower()
+    return raw in ("sing-box", "singbox", "gateway")
 
 
 def get_panel_credentials() -> tuple[str, str]:
@@ -698,6 +759,85 @@ def load_hy2_config() -> dict:
         raise RuntimeError("Некорректный YAML: auth.userpass должен быть object")
     cfg["auth"]["userpass"] = up
     return cfg
+
+
+def load_sing_box_config_json() -> dict | None:
+    p = Path(SING_BOX_CONFIG_PATH)
+    if not p.is_file():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def summarize_sing_box_for_panel() -> dict:
+    """Сводка для UI: теги inbounds, UUID (VLESS), имена HY2 без паролей."""
+    out: dict = {
+        "config_path": str(SING_BOX_CONFIG_PATH),
+        "load_error": "",
+        "inbounds": [],
+        "route_rule_count": 0,
+        "outbound_tags": [],
+    }
+    cfg = load_sing_box_config_json()
+    if cfg is None:
+        out["load_error"] = f"Файл не найден или невалидный JSON: {SING_BOX_CONFIG_PATH}"
+        return out
+
+    inbounds = cfg.get("inbounds")
+    if isinstance(inbounds, list):
+        for ib in inbounds:
+            if not isinstance(ib, dict):
+                continue
+            tag = str(ib.get("tag") or "")
+            ib_type = str(ib.get("type") or "")
+            listen = ib.get("listen")
+            listen_port = ib.get("listen_port")
+            users_out: list[dict] = []
+            users = ib.get("users")
+            if isinstance(users, list):
+                for u in users:
+                    if not isinstance(u, dict):
+                        continue
+                    if u.get("uuid") is not None:
+                        users_out.append(
+                            {
+                                "kind": "vless",
+                                "id": str(u.get("uuid") or ""),
+                                "name": str(u.get("name") or ""),
+                            }
+                        )
+                    elif ib_type == "hysteria2" or "name" in u:
+                        users_out.append(
+                            {
+                                "kind": "hysteria2",
+                                "id": str(u.get("name") or ""),
+                                "secret_masked": True,
+                            }
+                        )
+            out["inbounds"].append(
+                {
+                    "tag": tag or "(без тега)",
+                    "type": ib_type or "?",
+                    "listen": listen,
+                    "listen_port": listen_port,
+                    "users": users_out,
+                }
+            )
+
+    route = cfg.get("route")
+    if isinstance(route, dict):
+        rules = route.get("rules")
+        if isinstance(rules, list):
+            out["route_rule_count"] = len(rules)
+    outbounds = cfg.get("outbounds")
+    if isinstance(outbounds, list):
+        for ob in outbounds:
+            if isinstance(ob, dict) and ob.get("tag"):
+                out["outbound_tags"].append(str(ob["tag"]))
+    return out
 
 
 def infer_server_values(cfg: dict) -> tuple[str, int, str]:
@@ -1258,7 +1398,8 @@ def bandwidth_to_mbps(value) -> float | None:
 
 
 def read_bandwidth_settings(cfg: dict | None = None) -> dict:
-    cfg = cfg or load_hy2_config()
+    if cfg is None:
+        cfg = load_hy2_config()
     bw = cfg.get("bandwidth")
     if not isinstance(bw, dict):
         return {"up_mbps": "", "down_mbps": "", "up_raw": "", "down_raw": ""}
@@ -2224,13 +2365,43 @@ def render_index_page(
     created_urls: list[str] | None = None,
     logs_data: dict | None = None,
 ):
-    active_users, disabled_users, stats = build_users_view()
-    cfg = load_hy2_config()
     merged_defaults = base_defaults()
     if isinstance(defaults, dict):
         merged_defaults.update(defaults)
     ws = read_whitelist_sync_state()
     ptz = get_panel_timezone()
+
+    if is_sing_box_readonly_panel():
+        active_users = []
+        disabled_users = []
+        stats = {
+            "enabled": False,
+            "error": "",
+            "online_users": 0,
+            "online_connections": 0,
+            "sum_rx": 0,
+            "sum_tx": 0,
+            "sum_total": 0,
+            "sum_rx_h": "0 B",
+            "sum_tx_h": "0 B",
+            "sum_total_h": "0 B",
+            "users": {},
+        }
+        cfg: dict = {}
+        sing_box_summary = summarize_sing_box_for_panel()
+        panel_backend = "sing-box"
+    else:
+        active_users, disabled_users, stats = build_users_view()
+        cfg = load_hy2_config()
+        sing_box_summary = {
+            "config_path": "",
+            "load_error": "",
+            "inbounds": [],
+            "route_rule_count": 0,
+            "outbound_tags": [],
+        }
+        panel_backend = "hysteria"
+
     return render_template(
         "index.html",
         defaults=merged_defaults,
@@ -2251,6 +2422,17 @@ def render_index_page(
         whitelist_last_sync_display=format_whitelist_last_sync_display(ws.get("last_run_utc"), ptz),
         panel_timezone=ptz,
         panel_timezone_options=PANEL_TIMEZONE_OPTIONS,
+        panel_backend=panel_backend,
+        sing_box_summary=sing_box_summary,
+    )
+
+
+def reject_sing_box_mutations():
+    """POST: в режиме sing-box блокируем изменения HY2 и связанных настроек сервера."""
+    if not is_sing_box_readonly_panel():
+        return None
+    return render_index_page(
+        error_message="Режим sing-box (только чтение): изменение пользователей Hysteria2 и связанных настроек сервера отключено.",
     )
 
 
@@ -2263,6 +2445,9 @@ def index():
 @bp.route("/apply", methods=["POST"])
 @requires_auth
 def apply_handler():
+    blocked = reject_sing_box_mutations()
+    if blocked is not None:
+        return blocked
     mode = request.form.get("mode", "manual")
     traffic_limit_raw = request.form.get("traffic_limit_gb_manual", "") if mode == "manual" else request.form.get("traffic_limit_gb_prefix", "")
     duration_days_raw = request.form.get("duration_days_manual", "") if mode == "manual" else request.form.get("duration_days_prefix", "")
@@ -2367,6 +2552,9 @@ def qr_handler():
 @bp.route("/users/toggle", methods=["POST"])
 @requires_auth
 def users_toggle_handler():
+    blocked = reject_sing_box_mutations()
+    if blocked is not None:
+        return blocked
     username = request.form.get("username", "").strip()
     action = request.form.get("action", "").strip()
     try:
@@ -2379,6 +2567,9 @@ def users_toggle_handler():
 @bp.route("/users/password/random", methods=["POST"])
 @requires_auth
 def users_password_random_handler():
+    blocked = reject_sing_box_mutations()
+    if blocked is not None:
+        return blocked
     username = request.form.get("username", "").strip()
     try:
         msg = reset_user_password_random(username)
@@ -2390,6 +2581,9 @@ def users_password_random_handler():
 @bp.route("/users/delete", methods=["POST"])
 @requires_auth
 def users_delete_handler():
+    blocked = reject_sing_box_mutations()
+    if blocked is not None:
+        return blocked
     scope = request.form.get("scope", "").strip()
     mode = request.form.get("mode", "").strip()
     selected = request.form.getlist("selected_users")
@@ -2403,6 +2597,9 @@ def users_delete_handler():
 @bp.route("/users/limits", methods=["POST"])
 @requires_auth
 def users_limits_handler():
+    blocked = reject_sing_box_mutations()
+    if blocked is not None:
+        return blocked
     username = request.form.get("username", "").strip()
     traffic_limit_raw = request.form.get("traffic_limit_gb", "")
     duration_days_raw = request.form.get("duration_days", "")
@@ -2435,6 +2632,9 @@ def users_limits_handler():
 @bp.route("/users/note", methods=["POST"])
 @requires_auth
 def users_note_handler():
+    blocked = reject_sing_box_mutations()
+    if blocked is not None:
+        return blocked
     username = request.form.get("username", "").strip()
     note = request.form.get("note", "")
     try:
@@ -2453,6 +2653,9 @@ def users_note_handler():
 @bp.route("/server/bandwidth", methods=["POST"])
 @requires_auth
 def server_bandwidth_handler():
+    blocked = reject_sing_box_mutations()
+    if blocked is not None:
+        return blocked
     up_raw = request.form.get("server_up_mbps", "")
     down_raw = request.form.get("server_down_mbps", "")
     try:
@@ -2506,10 +2709,10 @@ def server_whitelist_sync_handler():
     try:
         if not WHITELIST_SYNC_SCRIPT.is_file():
             raise RuntimeError("Скрипт whitelist_sync.py не найден")
-        if not WHITELIST_VENV_PYTHON.is_file():
-            raise RuntimeError("Интерпретатор .venv не найден")
+        if not WHITELIST_PYTHON.is_file():
+            raise RuntimeError("Интерпретатор Python для whitelist не найден")
         r = subprocess.run(
-            [str(WHITELIST_VENV_PYTHON), str(WHITELIST_SYNC_SCRIPT)],
+            [str(WHITELIST_PYTHON), str(WHITELIST_SYNC_SCRIPT)],
             capture_output=True,
             text=True,
             timeout=300,
@@ -2541,6 +2744,9 @@ def server_panel_timezone_handler():
 @bp.route("/server/exclusions", methods=["POST"])
 @requires_auth
 def server_exclusions_handler():
+    blocked = reject_sing_box_mutations()
+    if blocked is not None:
+        return blocked
     raw = request.form.get("server_exclusions", "")
     try:
         items = parse_exclusion_tokens(raw)
@@ -2558,6 +2764,9 @@ def server_exclusions_handler():
 @bp.route("/server/blacklist/add", methods=["POST"])
 @requires_auth
 def server_blacklist_add_handler():
+    blocked = reject_sing_box_mutations()
+    if blocked is not None:
+        return blocked
     raw = request.form.get("blacklist_ip_add", "")
     try:
         ip = parse_single_ip(raw)
@@ -2573,6 +2782,9 @@ def server_blacklist_add_handler():
 @bp.route("/server/blacklist/remove", methods=["POST"])
 @requires_auth
 def server_blacklist_remove_handler():
+    blocked = reject_sing_box_mutations()
+    if blocked is not None:
+        return blocked
     raw = request.form.get("blacklist_ip_remove", "")
     try:
         ip = parse_single_ip(raw)
@@ -2632,6 +2844,20 @@ def logs_search_handler():
 @bp.route("/api/live", methods=["GET"])
 @requires_auth
 def api_live_handler():
+    if is_sing_box_readonly_panel():
+        payload = {
+            "panel_backend": "sing-box",
+            "stats": {
+                "sum_rx_h": "0 B",
+                "sum_tx_h": "0 B",
+                "sum_total_h": "0 B",
+                "online_users": 0,
+                "online_connections": 0,
+            },
+            "users": {},
+        }
+        return Response(json.dumps(payload, ensure_ascii=False), mimetype="application/json")
+
     active_users, disabled_users, stats = build_users_view()
     users = {}
     for u in active_users + disabled_users:
@@ -2649,6 +2875,7 @@ def api_live_handler():
             "traffic_usage_percent": int(u.get("traffic_usage_percent", 0) or 0),
         }
     payload = {
+        "panel_backend": "hysteria",
         "stats": {
             "sum_rx_h": stats.get("sum_rx_h", "0 B"),
             "sum_tx_h": stats.get("sum_tx_h", "0 B"),
@@ -2757,11 +2984,11 @@ PYAPP
     .qr-copy:hover { transform: scale(1.03); }
     .copy-status { margin: 8px 0; min-height: 18px; color: var(--ok); font-weight: 600; }
     .links-list { width: 100%; min-height: 170px; }
-    details.user-card { border: 1px solid var(--border); border-radius: 8px; margin: 8px 0; background: var(--bg-soft); }
-    details.user-card > summary { cursor: pointer; list-style: none; padding: 10px 12px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
-    details.user-card > summary::-webkit-details-marker { display: none; }
-    details.user-card > summary::after { content: "▸"; float: right; color: var(--muted); }
-    details.user-card[open] > summary::after { content: "▾"; }
+    details.user-card, details.sg-inbound-card { border: 1px solid var(--border); border-radius: 8px; margin: 8px 0; background: var(--bg-soft); }
+    details.user-card > summary, details.sg-inbound-card > summary { cursor: pointer; list-style: none; padding: 10px 12px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+    details.user-card > summary::-webkit-details-marker, details.sg-inbound-card > summary::-webkit-details-marker { display: none; }
+    details.user-card > summary::after, details.sg-inbound-card > summary::after { content: "▸"; float: right; color: var(--muted); }
+    details.user-card[open] > summary::after, details.sg-inbound-card[open] > summary::after { content: "▾"; }
     .user-body { border-top: 1px solid var(--border); padding: 10px; }
     .url-text { display: block; margin-top: 8px; white-space: pre-wrap; word-break: break-all; }
     .summary-name { flex: 1; min-width: 0; }
@@ -2988,7 +3215,45 @@ PYAPP
   {% if ok_message %}<p class="ok"><strong>{{ ok_message }}</strong></p>{% endif %}
   {% if error_message %}<p class="err"><strong>Ошибка:</strong> {{ error_message }}</p>{% endif %}
 
-  {% if stats and stats.enabled %}
+  {% if panel_backend == 'sing-box' %}
+  <div class="box" style="border-color:#2563eb;">
+    <h2 style="margin-top:0;">Шлюз sing-box (только чтение)</h2>
+    <p class="muted">Конфиг: <code>{{ sing_box_summary.config_path }}</code></p>
+    {% if sing_box_summary.load_error %}
+      <p class="err">{{ sing_box_summary.load_error }}</p>
+    {% else %}
+      <p class="muted">Правил в route.rules: {{ sing_box_summary.route_rule_count }} · Outbounds: {% if sing_box_summary.outbound_tags %}{{ sing_box_summary.outbound_tags | join(', ') }}{% else %}—{% endif %}</p>
+      {% for ib in sing_box_summary.inbounds %}
+      <details class="sg-inbound-card">
+        <summary><span class="summary-name">{{ ib.type }} · {{ ib.tag }}{% if ib.listen_port %} · порт {{ ib.listen_port }}{% endif %}{% if ib.listen %} · listen {{ ib.listen }}{% endif %}</span></summary>
+        <div class="user-body">
+          {% if ib.users %}
+          <table style="width:100%; border-collapse:collapse; font-size:0.9rem;">
+            <thead><tr><th style="text-align:left; padding:4px;">Тип</th><th style="text-align:left; padding:4px;">Идентификатор</th><th style="text-align:left; padding:4px;">Имя</th></tr></thead>
+            <tbody>
+            {% for row in ib.users %}
+              <tr>
+                <td style="padding:4px;">{{ row.kind }}</td>
+                <td style="padding:4px;"><code>{% if row.kind == 'hysteria2' %}пароль скрыт · {{ row.id }}{% else %}{{ row.id }}{% endif %}</code></td>
+                <td style="padding:4px;">{{ row.name or '—' }}</td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+          {% else %}
+          <p class="muted">Пользователи в inbound не заданы или формат не распознан.</p>
+          {% endif %}
+        </div>
+      </details>
+      {% endfor %}
+    {% endif %}
+    <p class="muted" style="margin-bottom:0;">Локальное управление пользователями Hysteria2 на этом узле отключено. Отключайте HY2 на msgw только после готовности миграции — вручную, чтобы не оставлять клиентов без связи.</p>
+  </div>
+  {% endif %}
+
+  {% if panel_backend == 'sing-box' %}
+    <p class="muted">Статистика Hysteria2 на этом узле не отображается (режим sing-box).</p>
+  {% elif stats and stats.enabled %}
     <div class="stats-grid">
       <div class="stat-card">
         <div class="stat-title">Скачано (RX)</div>
@@ -3018,6 +3283,7 @@ PYAPP
         <h2>Настройки сервера</h2>
         <button id="close-server-settings" type="button" class="close-btn" title="Закрыть">×</button>
       </div>
+      {% if panel_backend != 'sing-box' %}
       <form method="post" action="{{ url_for('hy2.server_bandwidth_handler') }}">
         <div class="server-grid">
           <div>
@@ -3032,6 +3298,9 @@ PYAPP
         <div class="actions"><button type="submit">Применить лимит скорости</button></div>
       </form>
       <p class="muted">Текущий глобальный лимит Hysteria2: Up {{ bandwidth.up_raw or 'не задан' }} / Down {{ bandwidth.down_raw or 'не задан' }}</p>
+      {% else %}
+      <p class="muted">Лимит скорости Hysteria2 на этом узле не применяется (режим sing-box).</p>
+      {% endif %}
       <hr style="border-color:#374151; opacity:.5; margin:10px 0;">
       <h3 style="margin:0 0 8px; font-size:1rem;">Белый список РФ (моб. интернет)</h3>
       {% set wlf = whitelist_sync.get('files') or {} %}
@@ -3093,12 +3362,12 @@ PYAPP
         <div class="actions"><button type="submit">Сохранить логин и пароль</button></div>
       </form>
       <hr style="border-color:#374151; opacity:.5; margin:10px 0;">
+      {% if panel_backend != 'sing-box' %}
       <form method="post" action="{{ url_for('hy2.server_exclusions_handler') }}">
         <label>Исключения fail2ban (IP или CIDR, по одному в строке)</label>
         <textarea name="server_exclusions" rows="6" placeholder="77.220.143.56&#10;192.168.1.0/24">{{ defaults.server_exclusions or exclusions.text or '' }}</textarea>
         <div class="actions"><button type="submit">Применить исключения</button></div>
       </form>
-      <p class="muted">Используется для `ignoreip` в fail2ban. Записи `127.0.0.0/8`, `::1` и фиксированные доверенные IP добавляются автоматически при сохранении (их нельзя отключить через форму).</p>
       <hr style="border-color:#374151; opacity:.5; margin:10px 0;">
       <form method="post" action="{{ url_for('hy2.server_blacklist_add_handler') }}">
         <label>Добавить IP в черный список fail2ban</label>
@@ -3133,6 +3402,9 @@ PYAPP
       </div>
       {% if blacklist.error %}
         <p class="muted">Не удалось получить черный список: {{ blacklist.error }}</p>
+      {% endif %}
+      {% else %}
+      <p class="muted">Исключения и черный список fail2ban в этом режиме не редактируются из панели.</p>
       {% endif %}
     </div>
   </div>
@@ -3192,6 +3464,7 @@ PYAPP
     </div>
   </div>
 
+  {% if panel_backend != 'sing-box' %}
   <form method="post" action="{{ url_for('hy2.apply_handler') }}">
     <input type="hidden" id="mode-input" name="mode" value="{{ defaults.mode or 'manual' }}">
     <details id="create-users-card" class="create-card">
@@ -3538,6 +3811,9 @@ PYAPP
       <p class="muted">Нет отключенных пользователей.</p>
     {% endif %}
   </div>
+  {% else %}
+  <p class="muted">Управление локальными пользователями Hysteria2 на этом узле отключено (режим sing-box).</p>
+  {% endif %}
 
   <footer class="site-footer">
     <span>© 2026 Разработка: AntyanMSA</span>
@@ -3874,6 +4150,7 @@ PYAPP
 </html>
 
 HTML
+  HY2_WHITELIST_PY="${INSTALL_DIR}/.venv/bin/python"
 }
 
 write_env_file() {
@@ -3892,6 +4169,11 @@ PANEL_URL_PREFIX=${PANEL_URL_PREFIX}
 PROTECTED_USERS=
 RU_WHITELIST_SYNC_SCHEDULE=${WHITELIST_SYNC_SCHEDULE:-daily}
 PANEL_TIMEZONE=Europe/Moscow
+PANEL_TLS_CERT=${PANEL_TLS_CERT:-}
+PANEL_TLS_KEY=${PANEL_TLS_KEY:-}
+# Режим шлюза (только чтение sing-box): раскомментируйте на mskgw и укажите путь к JSON
+#PANEL_BACKEND=sing-box
+#SING_BOX_CONFIG_PATH=/etc/sing-box/config.json
 EOF
 }
 
@@ -3912,7 +4194,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 WorkingDirectory=${INSTALL_DIR}
-ExecStart=${INSTALL_DIR}/.venv/bin/python ${INSTALL_DIR}/whitelist_sync.py
+ExecStart=${HY2_WHITELIST_PY} ${INSTALL_DIR}/whitelist_sync.py
 User=root
 EOF
   cat > "/etc/systemd/system/hy2-whitelist-sync.timer" <<EOF
@@ -3934,6 +4216,8 @@ EOF
 
 setup_tls() {
   TLS_ARGS=""
+  PANEL_TLS_CERT=""
+  PANEL_TLS_KEY=""
   if [[ "${APP_SCHEME}" != "https" ]]; then
     return
   fi
@@ -3951,11 +4235,34 @@ setup_tls() {
       -out "${cert_path}" \
       -subj "/CN=${APP_HOST}" >/dev/null 2>&1
   fi
+  PANEL_TLS_CERT="${cert_path}"
+  PANEL_TLS_KEY="${key_path}"
   TLS_ARGS=" --certfile ${cert_path} --keyfile ${key_path}"
 }
 
 write_service() {
-  cat > "/etc/systemd/system/${SERVICE_NAME}" <<EOF
+  if [[ "${USE_PANEL_BINARY:-1}" == "1" ]]; then
+    cat > "/etc/systemd/system/${SERVICE_NAME}" <<EOF
+[Unit]
+Description=HY2 Admin Web Panel (binary)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=${INSTALL_DIR}
+EnvironmentFile=${INSTALL_DIR}/.env
+ExecStart=${INSTALL_DIR}/hy2-admin-panel
+Restart=always
+RestartSec=2
+User=root
+Group=root
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  else
+    cat > "/etc/systemd/system/${SERVICE_NAME}" <<EOF
 [Unit]
 Description=HY2 Admin Web Panel
 After=network.target
@@ -3973,9 +4280,14 @@ LimitNOFILE=65535
 [Install]
 WantedBy=multi-user.target
 EOF
+  fi
 }
 
 install_python_deps() {
+  if [[ "${USE_PANEL_BINARY:-1}" == "1" ]]; then
+    echo "[hy2-admin install] режим бинарника: виртуальное окружение для панели не создаётся"
+    return 0
+  fi
   python3 -m venv "${INSTALL_DIR}/.venv"
   "${INSTALL_DIR}/.venv/bin/pip" install --upgrade pip
   "${INSTALL_DIR}/.venv/bin/pip" install -r "${INSTALL_DIR}/requirements.txt"
@@ -4018,6 +4330,37 @@ print_summary() {
   echo "==========================================="
 }
 
+run_uninstall() {
+  require_root
+  local INSTALL_DIR="/opt/hy2-admin"
+  local SERVICE_NAME="hy2-admin.service"
+  echo "Удаление HY2 Admin с этой системы."
+  echo "Будут остановлены и отключены: ${SERVICE_NAME}, таймер hy2-whitelist-sync (если есть)."
+  echo "Конфиги Hysteria (/etc/hysteria), nginx и fail2ban скрипт не удаляет."
+  read -r -p "Введите YES для продолжения: " _u
+  if [[ "${_u}" != "YES" ]]; then
+    echo "Отменено."
+    exit 0
+  fi
+  systemctl stop "${SERVICE_NAME}" 2>/dev/null || true
+  systemctl disable "${SERVICE_NAME}" 2>/dev/null || true
+  systemctl stop hy2-whitelist-sync.timer 2>/dev/null || true
+  systemctl disable hy2-whitelist-sync.timer 2>/dev/null || true
+  systemctl stop hy2-whitelist-sync.service 2>/dev/null || true
+  rm -f /etc/systemd/system/hy2-admin.service
+  rm -f /etc/systemd/system/hy2-whitelist-sync.service
+  rm -f /etc/systemd/system/hy2-whitelist-sync.timer
+  systemctl daemon-reload
+  read -r -p "Удалить каталог ${INSTALL_DIR} целиком? (YES / нет): " _d
+  if [[ "${_d}" == "YES" ]]; then
+    rm -rf "${INSTALL_DIR}"
+    echo "Каталог ${INSTALL_DIR} удалён."
+  else
+    echo "Каталог ${INSTALL_DIR} сохранён."
+  fi
+  echo "Готово."
+}
+
 main() {
   require_root
   if [[ "${MODE}" == "--auto" ]]; then
@@ -4025,23 +4368,28 @@ main() {
   elif [[ "${MODE}" == "--interactive" ]]; then
     collect_interactive
   else
-    echo "Использование: $0 [--auto|--interactive]" >&2
+    echo "Использование: $0 [--auto|--interactive|--uninstall|--remove]" >&2
     exit 1
   fi
   WHITELIST_SYNC_SCHEDULE="${WHITELIST_SYNC_SCHEDULE:-daily}"
+  HY2_WHITELIST_PY="${HY2_WHITELIST_PY:-/usr/bin/python3}"
   install_packages
   setup_fail2ban
   prepare_files
-  write_env_file
   setup_tls
+  write_env_file
   write_service
   install_python_deps
   write_whitelist_sync_systemd
-  "${INSTALL_DIR}/.venv/bin/python" "${INSTALL_DIR}/whitelist_sync.py" || true
+  "${HY2_WHITELIST_PY}" "${INSTALL_DIR}/whitelist_sync.py" || true
   open_firewall
   service_manage
   print_summary
 }
 
+if [[ "${1:-}" == "--uninstall" || "${1:-}" == "--remove" ]]; then
+  run_uninstall
+  exit 0
+fi
 main "$@"
 

@@ -1,4 +1,19 @@
-# Локальные копии панели; каноническая версия в heredoc внутри install_hy2_admin.sh
-/app.py
-/whitelist_sync.py
-/templates/
+# Сборка бинарника панели (PyInstaller)
+/build/
+/dist/
+*.spec.bak
+/dist/hy2-admin-panel
+/dist/hy2-admin-panel-linux-amd64
+
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Секреты и артефакты (не коммитить копии с прод-серверов)
+.env
+.env.*
+*.log
+**/backups/
+*.pem
+*.key
+local-config*.json

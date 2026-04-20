@@ -1,0 +1,199 @@
+<!doctype html>
+<!-- Вставляйте в панель целиком: от первой строки до </html> включительно. -->
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Тест заглушки · canvas</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; overflow: hidden; font-family: system-ui, "Segoe UI", sans-serif; }
+    canvas#bg {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+      z-index: 0;
+    }
+    .layer {
+      position: relative;
+      z-index: 1;
+      min-height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 28px 20px;
+    }
+    .card {
+      max-width: 440px;
+      text-align: center;
+      padding: 36px 32px;
+      border-radius: 20px;
+      border: 1px solid rgba(148, 163, 184, 0.22);
+      background: rgba(12, 14, 22, 0.62);
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+      box-shadow:
+        0 28px 90px rgba(0, 0, 0, 0.55),
+        inset 0 1px 0 rgba(255, 255, 255, 0.07);
+    }
+    .badge {
+      display: inline-block;
+      font-size: 0.7rem;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: #7dd3fc;
+      background: rgba(56, 189, 248, 0.12);
+      border: 1px solid rgba(56, 189, 248, 0.25);
+      padding: 6px 12px;
+      border-radius: 999px;
+      margin-bottom: 16px;
+    }
+    h1 {
+      margin: 0 0 14px;
+      font-size: 1.45rem;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      background: linear-gradient(125deg, #f8fafc 0%, #94a3b8 42%, #e2e8f0 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    p {
+      margin: 0;
+      font-size: 0.98rem;
+      line-height: 1.6;
+      color: rgba(148, 163, 184, 0.96);
+    }
+    .hint {
+      margin-top: 18px;
+      font-size: 0.78rem;
+      color: rgba(100, 116, 139, 0.9);
+    }
+  </style>
+</head>
+<body>
+  <canvas id="bg" aria-hidden="true"></canvas>
+  <div class="layer">
+    <div class="card">
+      <div class="badge">Демо · canvas</div>
+      <h1>Сервис временно недоступен</h1>
+      <p>
+        Идёт обслуживание или высокая нагрузка. Попробуйте открыть страницу через несколько минут.
+      </p>
+      <p class="hint">Если вы администратор — это тестовая заглушка из панели.</p>
+    </div>
+  </div>
+  <script>
+(function () {
+  var canvas = document.getElementById("bg");
+  if (!canvas || !canvas.getContext) return;
+  var ctx = canvas.getContext("2d");
+  var dpr = Math.min(window.devicePixelRatio || 1, 2);
+  var w, h, t0 = performance.now();
+  var pts = [];
+
+  function buildPts() {
+    var n = Math.min(100, Math.floor((w * h) / 15000) + 40);
+    pts = [];
+    for (var i = 0; i < n; i++) {
+      pts.push({
+        x: Math.random() * w,
+        y: Math.random() * h,
+        vx: (Math.random() - 0.5) * 0.34,
+        vy: (Math.random() - 0.5) * 0.34,
+        r: Math.random() * 1.4 + 0.28
+      });
+    }
+  }
+
+  function resize() {
+    w = window.innerWidth;
+    h = window.innerHeight;
+    canvas.width = Math.floor(w * dpr);
+    canvas.height = Math.floor(h * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    buildPts();
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
+  function tick(now) {
+    var t = (now - t0) * 0.001;
+    var g = ctx.createLinearGradient(0, 0, w, h);
+    g.addColorStop(0, "#060910");
+    g.addColorStop(0.42, "#0a1022");
+    g.addColorStop(1, "#070c14");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+
+    var cx = w * (0.48 + 0.1 * Math.sin(t * 0.31));
+    var cy = h * (0.42 + 0.08 * Math.cos(t * 0.26));
+    var rg = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(w, h) * 0.58);
+    rg.addColorStop(0, "rgba(56, 189, 248, 0.11)");
+    rg.addColorStop(0.4, "rgba(99, 102, 241, 0.06)");
+    rg.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = rg;
+    ctx.fillRect(0, 0, w, h);
+
+    ctx.strokeStyle = "rgba(51, 65, 85, 0.35)";
+    ctx.lineWidth = 1;
+    var step = 48;
+    var gx, gy;
+    for (gx = (t * 11) % step; gx < w + step; gx += step) {
+      ctx.beginPath();
+      ctx.moveTo(gx, 0);
+      ctx.lineTo(gx, h);
+      ctx.stroke();
+    }
+    for (gy = (t * 7) % step; gy < h + step; gy += step) {
+      ctx.beginPath();
+      ctx.moveTo(0, gy);
+      ctx.lineTo(w, gy);
+      ctx.stroke();
+    }
+
+    var i, p;
+    for (i = 0; i < pts.length; i++) {
+      p = pts[i];
+      p.x += p.vx;
+      p.y += p.vy;
+      if (p.x < 0 || p.x > w) p.vx *= -1;
+      if (p.y < 0 || p.y > h) p.vy *= -1;
+    }
+
+    var maxD = 112;
+    var a, b, dx, dy, d, alpha;
+    for (a = 0; a < pts.length; a++) {
+      for (b = a + 1; b < pts.length; b++) {
+        dx = pts[a].x - pts[b].x;
+        dy = pts[a].y - pts[b].y;
+        d = Math.sqrt(dx * dx + dy * dy);
+        if (d < maxD) {
+          alpha = (1 - d / maxD) * 0.21;
+          ctx.strokeStyle = "rgba(148, 163, 184, " + alpha + ")";
+          ctx.beginPath();
+          ctx.moveTo(pts[a].x, pts[a].y);
+          ctx.lineTo(pts[b].x, pts[b].y);
+          ctx.stroke();
+        }
+      }
+    }
+
+    for (i = 0; i < pts.length; i++) {
+      p = pts[i];
+      ctx.fillStyle = "rgba(226, 232, 240, 0.52)";
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+})();
+  </script>
+</body>
+</html>
