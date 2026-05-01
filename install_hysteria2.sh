@@ -158,15 +158,42 @@ detect_hysteria_asset() {
 download_with_resume() {
   local url="$1"
   local out="$2"
+  local rc
+  local -a resume_opt=()
+  if [[ -s "${out}" ]]; then
+    resume_opt=(--continue-at -)
+  fi
+
   curl -fL \
     --retry 20 \
     --retry-all-errors \
     --retry-delay 2 \
     --connect-timeout 20 \
     --max-time 0 \
-    --continue-at - \
+    "${resume_opt[@]}" \
     "${url}" \
-    -o "${out}"
+    -o "${out}" || rc=$?
+
+  if [[ "${rc:-0}" -eq 0 ]]; then
+    return 0
+  fi
+
+  # curl 33: server doesn't support byte ranges for resume.
+  if [[ "${rc:-0}" -eq 33 ]]; then
+    warn "Источник не поддерживает resume, перезапускаю скачивание с нуля..."
+    rm -f "${out}"
+    curl -fL \
+      --retry 20 \
+      --retry-all-errors \
+      --retry-delay 2 \
+      --connect-timeout 20 \
+      --max-time 0 \
+      "${url}" \
+      -o "${out}"
+    return $?
+  fi
+
+  return "${rc:-1}"
 }
 
 install_hysteria() {
