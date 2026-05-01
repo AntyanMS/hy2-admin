@@ -18,6 +18,7 @@ PANEL_BINARY_URL="${HY2_PANEL_URL:-https://github.com/AntyanMS/hy2-admin/release
 PANEL_SESSION_SECRET=""
 SERVER_HOST=""
 USE_LETS_ENCRYPT="n"
+HYSTERIA_CERT_SYNC_RESULT="not_attempted"
 
 log() { printf "[INFO] %s\n" "$*"; }
 die() { printf "[ERROR] %s\n" "$*" >&2; exit 1; }
@@ -161,7 +162,8 @@ install_packages() {
 download_binary() {
   log "Загрузка панели: ${PANEL_BINARY_URL}"
   mkdir -p "${INSTALL_DIR}"
-  curl -fL "${PANEL_BINARY_URL}" -o "${BINARY_PATH}"
+  curl -fL --retry 10 --retry-all-errors --connect-timeout 15 --max-time 300 \
+    "${PANEL_BINARY_URL}" -o "${BINARY_PATH}"
   chmod 0755 "${BINARY_PATH}"
 }
 
@@ -297,6 +299,112 @@ EOF
   write_nginx_site "${cert_path}" "${key_path}"
 }
 
+sync_hysteria_certbot_materials() {
+  local cert_path key_path
+  cert_path="/etc/letsencrypt/live/${SERVER_HOST}/fullchain.pem"
+  key_path="/etc/letsencrypt/live/${SERVER_HOST}/privkey.pem"
+
+  if [[ ! -f "${cert_path}" || ! -f "${key_path}" ]]; then
+    HYSTERIA_CERT_SYNC_RESULT="cert_missing"
+    return
+  fi
+  if [[ ! -f /etc/hysteria/config.yaml ]]; then
+    HYSTERIA_CERT_SYNC_RESULT="hysteria_config_not_found"
+    return
+  fi
+
+  install -d -m 0755 /etc/hysteria
+  install -o root -g root -m 0644 "${cert_path}" /etc/hysteria/fullchain.pem
+  install -o root -g root -m 0600 "${key_path}" /etc/hysteria/privkey.pem
+
+  python3 - <<'PY'
+from pathlib import Path
+import re
+
+cfg = Path("/etc/hysteria/config.yaml")
+text = cfg.read_text(encoding="utf-8")
+
+# If already in tls mode, just normalize paths.
+if re.search(r"(?m)^tls:\s*$", text):
+    text = re.sub(
+        r"(?ms)^tls:\s*\n(?:[ \t].*\n)*?",
+        "tls:\n  cert: /etc/hysteria/fullchain.pem\n  key: /etc/hysteria/privkey.pem\n",
+        text,
+        count=1,
+    )
+    cfg.write_text(text, encoding="utf-8")
+    raise SystemExit(0)
+
+listen_match = re.search(r"(?m)^listen:\s*(.+)\s*$", text)
+listen_value = listen_match.group(1).strip() if listen_match else ":443"
+
+users = []
+in_auth = False
+in_userpass = False
+for line in text.splitlines():
+    if re.match(r"^auth:\s*$", line):
+        in_auth = True
+        in_userpass = False
+        continue
+    if in_auth and re.match(r"^\S", line):
+        in_auth = False
+        in_userpass = False
+    if not in_auth:
+        continue
+    if re.match(r"^\s{2}userpass:\s*$", line):
+        in_userpass = True
+        continue
+    if in_userpass:
+        m = re.match(r"^\s{4}([^:#\s][^:]*):\s*(.+?)\s*$", line)
+        if m:
+            users.append((m.group(1).strip(), m.group(2).strip()))
+            continue
+        if line.strip() == "":
+            continue
+        if re.match(r"^\s{2}\S", line):
+            in_userpass = False
+
+if not users:
+    users = [("user1", "change_me")]
+
+out = [f"listen: {listen_value}", "", "tls:", "  cert: /etc/hysteria/fullchain.pem", "  key: /etc/hysteria/privkey.pem", "", "auth:", "  type: userpass", "  userpass:"]
+for u, p in users:
+    out.append(f"    {u}: {p}")
+out.append("")
+cfg.write_text("\n".join(out), encoding="utf-8")
+PY
+
+  if systemctl list-unit-files | grep -q '^hysteria-server\.service'; then
+    systemctl restart hysteria-server.service || true
+  fi
+
+  local hook_dir hook
+  hook_dir="/etc/letsencrypt/renewal-hooks/deploy"
+  hook="${hook_dir}/hy2-sync-hysteria.sh"
+  install -d -m 0755 "${hook_dir}"
+  cat > "${hook}" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+DOMAIN="${RENEWED_DOMAINS%% *}"
+if [[ -z "${DOMAIN}" ]]; then
+  exit 0
+fi
+CERT="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
+KEY="/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
+if [[ ! -f "${CERT}" || ! -f "${KEY}" ]]; then
+  exit 0
+fi
+if [[ ! -f /etc/hysteria/config.yaml ]]; then
+  exit 0
+fi
+install -o root -g root -m 0644 "${CERT}" /etc/hysteria/fullchain.pem
+install -o root -g root -m 0600 "${KEY}" /etc/hysteria/privkey.pem
+systemctl restart hysteria-server.service || true
+EOF
+  chmod 0755 "${hook}"
+  HYSTERIA_CERT_SYNC_RESULT="ok"
+}
+
 setup_fail2ban() {
   mkdir -p /etc/fail2ban/jail.d
   cat > /etc/fail2ban/jail.d/sshd-hard.local <<'EOF'
@@ -330,6 +438,11 @@ print_summary() {
   echo "  systemctl is-active ${SERVICE_NAME}"
   echo "  systemctl is-enabled ${SERVICE_NAME}"
   echo "  systemctl status nginx"
+  if [[ "${HYSTERIA_CERT_SYNC_RESULT}" == "ok" ]]; then
+    echo "  Hysteria: cert sync выполнен (/etc/hysteria/fullchain.pem, /etc/hysteria/privkey.pem)"
+  elif [[ "${HYSTERIA_CERT_SYNC_RESULT}" == "hysteria_config_not_found" ]]; then
+    echo "  Hysteria: конфиг не найден, cert sync пропущен"
+  fi
   echo "==============================================="
 }
 
@@ -349,6 +462,9 @@ main() {
   write_env
   write_systemd_unit
   setup_tls_and_nginx
+  if [[ "${USE_LETS_ENCRYPT}" == "y" ]]; then
+    sync_hysteria_certbot_materials
+  fi
   setup_fail2ban
   setup_ufw
   print_summary

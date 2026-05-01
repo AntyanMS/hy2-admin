@@ -9,12 +9,18 @@ HY2_PASS="${HY2_PASS:-}"
 SSH_PORT="${SSH_PORT:-22}"
 ENABLE_UFW="${ENABLE_UFW:-y}"
 CASCADE_NODE="${CASCADE_NODE:-n}"
+TLS_MODE="${TLS_MODE:-auto}"
+TLS_CERT_PATH="${TLS_CERT_PATH:-}"
+TLS_KEY_PATH="${TLS_KEY_PATH:-}"
 
 SERVICE_NAME="hysteria-server.service"
 CONFIG_PATH="/etc/hysteria/config.yaml"
 MASQ_DIR="/var/www/hy2-site"
 CASCADE_META="/etc/hysteria/cascade_node.json"
 SERVER_IP=""
+FINAL_TLS_MODE=""
+FINAL_TLS_CERT=""
+FINAL_TLS_KEY=""
 
 log() { printf "[INFO] %s\n" "$*"; }
 warn() { printf "[WARN] %s\n" "$*" >&2; }
@@ -35,6 +41,9 @@ Flags:
   --hy2-pass <pass>        First HY2 password (default: random)
   --ssh-port <port>        SSH port for UFW (default: 22)
   --cascade-node           Mark node as cascade/exit and print fingerprint
+  --tls-mode <mode>        auto | acme | certbot (default: auto)
+  --tls-cert <path>        Explicit cert path for tls-mode=certbot
+  --tls-key <path>         Explicit key path for tls-mode=certbot
   --skip-ufw               Do not modify UFW
   -h, --help               Show help
 EOF
@@ -70,6 +79,9 @@ parse_args() {
       --hy2-pass) HY2_PASS="${2:-}"; shift 2 ;;
       --ssh-port) SSH_PORT="${2:-}"; shift 2 ;;
       --cascade-node) CASCADE_NODE="y"; shift ;;
+      --tls-mode) TLS_MODE="${2:-}"; shift 2 ;;
+      --tls-cert) TLS_CERT_PATH="${2:-}"; shift 2 ;;
+      --tls-key) TLS_KEY_PATH="${2:-}"; shift 2 ;;
       --skip-ufw) ENABLE_UFW="n"; shift ;;
       -h|--help) usage; exit 0 ;;
       *) die "Неизвестный аргумент: $1" ;;
@@ -115,7 +127,9 @@ collect_interactive() {
 
 validate_auto() {
   [[ -n "${DOMAIN}" ]] || die "--auto требует --domain"
-  [[ -n "${EMAIL}" ]] || die "--auto требует --email"
+  if [[ "${TLS_MODE}" == "acme" || "${TLS_MODE}" == "auto" ]]; then
+    [[ -n "${EMAIL}" ]] || die "--auto требует --email для acme/auto режима"
+  fi
   [[ -n "${HY2_PASS}" ]] || HY2_PASS="$(random_hex)"
 }
 
@@ -129,7 +143,10 @@ install_packages() {
 install_hysteria() {
   if ! command -v hysteria >/dev/null 2>&1; then
     log "Установка Hysteria2..."
-    bash <(curl -fsSL https://get.hy2.sh/)
+    curl -fL --retry 10 --retry-all-errors --connect-timeout 15 --max-time 300 \
+      https://get.hy2.sh/ -o /tmp/get.hy2.sh
+    chmod +x /tmp/get.hy2.sh
+    bash /tmp/get.hy2.sh
   else
     log "Hysteria2 уже установлен."
   fi
@@ -155,8 +172,22 @@ backup_old_config() {
 
 write_hysteria_config() {
   log "Запись ${CONFIG_PATH}..."
-  cat > "${CONFIG_PATH}" <<EOF
-listen: 0.0.0.0:443
+  if [[ "${FINAL_TLS_MODE}" == "certbot" ]]; then
+    cat > "${CONFIG_PATH}" <<EOF
+listen: :443
+
+tls:
+  cert: /etc/hysteria/fullchain.pem
+  key: /etc/hysteria/privkey.pem
+
+auth:
+  type: userpass
+  userpass:
+    ${HY2_USER}: ${HY2_PASS}
+EOF
+  else
+    cat > "${CONFIG_PATH}" <<EOF
+listen: :443
 
 acme:
   type: http
@@ -168,16 +199,82 @@ auth:
   type: userpass
   userpass:
     ${HY2_USER}: ${HY2_PASS}
-
-masquerade:
-  type: file
-  file:
-    dir: ${MASQ_DIR}
-  listenHTTP: :80
-  listenHTTPS: :443
-  forceHTTPS: true
 EOF
+  fi
   chmod 644 "${CONFIG_PATH}"
+}
+
+choose_tls_mode() {
+  local mode cert key
+  mode="$(printf "%s" "${TLS_MODE}" | tr '[:upper:]' '[:lower:]')"
+  cert="${TLS_CERT_PATH:-/etc/letsencrypt/live/${DOMAIN}/fullchain.pem}"
+  key="${TLS_KEY_PATH:-/etc/letsencrypt/live/${DOMAIN}/privkey.pem}"
+
+  case "${mode}" in
+    auto)
+      if [[ -f "${cert}" && -f "${key}" ]]; then
+        FINAL_TLS_MODE="certbot"
+      else
+        FINAL_TLS_MODE="acme"
+      fi
+      ;;
+    acme|certbot)
+      FINAL_TLS_MODE="${mode}"
+      ;;
+    *)
+      die "Неверный --tls-mode: ${TLS_MODE}. Используйте auto|acme|certbot."
+      ;;
+  esac
+
+  if [[ "${FINAL_TLS_MODE}" == "acme" ]]; then
+    if systemctl is-active --quiet nginx; then
+      die "nginx уже активен, acme http-01 через Hysteria конфликтует с 80/tcp. Используйте --tls-mode certbot."
+    fi
+    [[ -n "${EMAIL}" ]] || die "Для acme режима нужен email."
+  else
+    [[ -f "${cert}" ]] || die "Сертификат не найден: ${cert}"
+    [[ -f "${key}" ]] || die "Ключ не найден: ${key}"
+    FINAL_TLS_CERT="${cert}"
+    FINAL_TLS_KEY="${key}"
+  fi
+}
+
+sync_cert_for_hysteria() {
+  if [[ "${FINAL_TLS_MODE}" != "certbot" ]]; then
+    return
+  fi
+  install -d -m 0755 /etc/hysteria
+  install -o root -g root -m 0644 "${FINAL_TLS_CERT}" /etc/hysteria/fullchain.pem
+  install -o root -g root -m 0600 "${FINAL_TLS_KEY}" /etc/hysteria/privkey.pem
+}
+
+install_renew_hook_if_possible() {
+  if [[ "${FINAL_TLS_MODE}" != "certbot" ]]; then
+    return
+  fi
+  local hook_dir="/etc/letsencrypt/renewal-hooks/deploy"
+  local hook="${hook_dir}/hy2-sync-hysteria.sh"
+  if [[ ! -d "/etc/letsencrypt" ]]; then
+    return
+  fi
+  install -d -m 0755 "${hook_dir}"
+  cat > "${hook}" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+DOMAIN="${RENEWED_DOMAINS%% *}"
+if [[ -z "${DOMAIN}" ]]; then
+  exit 0
+fi
+CERT="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
+KEY="/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
+if [[ ! -f "${CERT}" || ! -f "${KEY}" ]]; then
+  exit 0
+fi
+install -o root -g root -m 0644 "${CERT}" /etc/hysteria/fullchain.pem
+install -o root -g root -m 0600 "${KEY}" /etc/hysteria/privkey.pem
+systemctl restart hysteria-server.service || true
+EOF
+  chmod 0755 "${hook}"
 }
 
 configure_fail2ban() {
@@ -240,7 +337,13 @@ print_summary() {
   echo
   echo "========== Установка завершена =========="
   echo "Сервер: ${DOMAIN} (${SERVER_IP})"
-  echo "Порт:   443/udp (HY2), 443/tcp (маскировка), 80/tcp (ACME)"
+  if [[ "${FINAL_TLS_MODE}" == "acme" ]]; then
+    echo "TLS-режим: acme (http-01)"
+    echo "Порты:    443/udp (HY2), 80/tcp (ACME challenge)"
+  else
+    echo "TLS-режим: certbot (внешний cert/key)"
+    echo "Порты:    443/udp (HY2)"
+  fi
   echo "Пользователь: ${HY2_USER}"
   echo "Пароль:       ${HY2_PASS}"
   echo
@@ -278,11 +381,14 @@ main() {
     validate_auto
   fi
 
+  choose_tls_mode
   install_packages
   install_hysteria
   prepare_site_stub
   backup_old_config
+  sync_cert_for_hysteria
   write_hysteria_config
+  install_renew_hook_if_possible
   configure_fail2ban
   configure_ufw
   start_service
