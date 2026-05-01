@@ -202,27 +202,29 @@ install_hysteria() {
     local installer_path asset_name asset_url binary_path
     mkdir -p "${INSTALL_TMP_DIR}"
     installer_path="${INSTALL_TMP_DIR}/get.hy2.sh"
+    binary_path="${INSTALL_TMP_DIR}/hysteria"
 
-    # Primary path: official bootstrap script.
+    # Primary path: direct binary from GitHub Releases (more stable in poor networks).
+    asset_name="$(detect_hysteria_asset)"
+    asset_url="https://github.com/apernet/hysteria/releases/latest/download/${asset_name}"
+    if download_with_resume "${asset_url}" "${binary_path}"; then
+      install -m 0755 "${binary_path}" /usr/local/bin/hysteria
+      if /usr/local/bin/hysteria version >/dev/null 2>&1; then
+        return
+      fi
+      warn "Прямой бинарь скачан, но проверка версии не прошла."
+    fi
+
+    # Fallback path: official bootstrap script.
+    warn "Прямая установка бинаря не удалась, пробую get.hy2.sh..."
     if download_with_resume "https://get.hy2.sh/" "${installer_path}"; then
       chmod +x "${installer_path}"
-      if bash "${installer_path}"; then
-        if command -v hysteria >/dev/null 2>&1; then
-          return
-        fi
+      if bash "${installer_path}" && command -v hysteria >/dev/null 2>&1; then
+        return
       fi
     fi
 
-    warn "Установка через get.hy2.sh не удалась, пробую прямой бинарь из GitHub Releases..."
-    asset_name="$(detect_hysteria_asset)"
-    asset_url="https://github.com/apernet/hysteria/releases/latest/download/${asset_name}"
-    binary_path="${INSTALL_TMP_DIR}/hysteria"
-    download_with_resume "${asset_url}" "${binary_path}"
-    install -m 0755 "${binary_path}" /usr/local/bin/hysteria
-
-    if ! /usr/local/bin/hysteria version >/dev/null 2>&1; then
-      die "Hysteria бинарь скачан, но проверка версии не прошла."
-    fi
+    die "Не удалось установить Hysteria ни через бинарь, ни через get.hy2.sh."
   else
     log "Hysteria2 уже установлен."
   fi
