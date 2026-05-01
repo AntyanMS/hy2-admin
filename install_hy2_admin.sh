@@ -313,9 +313,17 @@ sync_hysteria_certbot_materials() {
     return
   fi
 
+  local cert_owner cert_group
+  cert_owner="root"
+  cert_group="root"
+  if id -u hysteria >/dev/null 2>&1; then
+    cert_owner="hysteria"
+    cert_group="hysteria"
+  fi
+
   install -d -m 0755 /etc/hysteria
-  install -o root -g root -m 0644 "${cert_path}" /etc/hysteria/fullchain.pem
-  install -o root -g root -m 0600 "${key_path}" /etc/hysteria/privkey.pem
+  install -o "${cert_owner}" -g "${cert_group}" -m 0644 "${cert_path}" /etc/hysteria/fullchain.pem
+  install -o "${cert_owner}" -g "${cert_group}" -m 0600 "${key_path}" /etc/hysteria/privkey.pem
 
   python3 - <<'PY'
 from pathlib import Path
@@ -327,7 +335,7 @@ text = cfg.read_text(encoding="utf-8")
 # If already in tls mode, just normalize paths.
 if re.search(r"(?m)^tls:\s*$", text):
     text = re.sub(
-        r"(?ms)^tls:\s*\n(?:[ \t].*\n)*?",
+        r"(?ms)^tls:\s*\n(?:[ \t]+.*\n)*",
         "tls:\n  cert: /etc/hysteria/fullchain.pem\n  key: /etc/hysteria/privkey.pem\n",
         text,
         count=1,
@@ -397,8 +405,13 @@ fi
 if [[ ! -f /etc/hysteria/config.yaml ]]; then
   exit 0
 fi
-install -o root -g root -m 0644 "${CERT}" /etc/hysteria/fullchain.pem
-install -o root -g root -m 0600 "${KEY}" /etc/hysteria/privkey.pem
+if id -u hysteria >/dev/null 2>&1; then
+  install -o hysteria -g hysteria -m 0644 "${CERT}" /etc/hysteria/fullchain.pem
+  install -o hysteria -g hysteria -m 0600 "${KEY}" /etc/hysteria/privkey.pem
+else
+  install -o root -g root -m 0644 "${CERT}" /etc/hysteria/fullchain.pem
+  install -o root -g root -m 0600 "${KEY}" /etc/hysteria/privkey.pem
+fi
 systemctl restart hysteria-server.service || true
 EOF
   chmod 0755 "${hook}"
