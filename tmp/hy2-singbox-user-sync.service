@@ -1,0 +1,7 @@
+[Unit]
+Description=Sync Hysteria users into sing-box in-hy2
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/hy2-admin/tools/sync_hy2_users_to_singbox.py

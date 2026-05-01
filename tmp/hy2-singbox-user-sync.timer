@@ -1,0 +1,11 @@
+[Unit]
+Description=Timer: sync users hysteria->sing-box
+
+[Timer]
+OnBootSec=20s
+OnUnitActiveSec=30s
+AccuracySec=5s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

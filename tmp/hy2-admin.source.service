@@ -1,0 +1,17 @@
+[Unit]
+Description=HY2 Admin Web Panel (source mode)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/hy2-admin
+EnvironmentFile=/opt/hy2-admin/.env
+ExecStart=/usr/bin/python3 /opt/hy2-admin/app.py
+Restart=always
+RestartSec=2
+User=root
+Group=root
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

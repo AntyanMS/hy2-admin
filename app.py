@@ -850,8 +850,10 @@ def make_client_url(
     speed_up_mbps: float | None = None,
     speed_down_mbps: float | None = None,
 ) -> str:
+    user_enc = quote(username, safe="")
     pass_enc = quote(password, safe="")
     query_parts = [f"sni={quote(sni, safe='')}"]
+    query_parts.append("alpn=h3")
     if INSECURE:
         query_parts.append("insecure=1")
     if isinstance(speed_up_mbps, (int, float)) and float(speed_up_mbps) > 0:
@@ -859,8 +861,8 @@ def make_client_url(
     if isinstance(speed_down_mbps, (int, float)) and float(speed_down_mbps) > 0:
         query_parts.append(f"downmbps={float(speed_down_mbps):g}")
     query = "&".join(query_parts)
-    # Hiddify expects password-only HY2 URI format in userinfo.
-    return f"hysteria2://{pass_enc}@{host}:{port}/?{query}#{quote(username, safe='')}"
+    # userpass auth requires username:password in URI userinfo.
+    return f"hysteria2://{user_enc}:{pass_enc}@{host}:{port}/?{query}#{user_enc}"
 
 
 def make_qr_png(text: str) -> bytes:
