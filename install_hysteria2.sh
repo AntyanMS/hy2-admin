@@ -12,6 +12,7 @@ CASCADE_NODE="${CASCADE_NODE:-n}"
 TLS_MODE="${TLS_MODE:-auto}"
 TLS_CERT_PATH="${TLS_CERT_PATH:-}"
 TLS_KEY_PATH="${TLS_KEY_PATH:-}"
+INSTALL_TMP_DIR="${INSTALL_TMP_DIR:-/var/tmp/hy2-installer}"
 
 SERVICE_NAME="hysteria-server.service"
 CONFIG_PATH="/etc/hysteria/config.yaml"
@@ -140,13 +141,61 @@ install_packages() {
   DEBIAN_FRONTEND=noninteractive apt-get install -y curl openssl ufw fail2ban
 }
 
+detect_hysteria_asset() {
+  local arch
+  arch="$(uname -m)"
+  case "${arch}" in
+    x86_64|amd64) echo "hysteria-linux-amd64" ;;
+    aarch64|arm64) echo "hysteria-linux-arm64" ;;
+    armv7l|armv7|armhf) echo "hysteria-linux-arm" ;;
+    i386|i686) echo "hysteria-linux-386" ;;
+    *)
+      die "Неподдерживаемая архитектура для авто-установки Hysteria: ${arch}"
+      ;;
+  esac
+}
+
+download_with_resume() {
+  local url="$1"
+  local out="$2"
+  curl -fL \
+    --retry 20 \
+    --retry-all-errors \
+    --retry-delay 2 \
+    --connect-timeout 20 \
+    --max-time 0 \
+    --continue-at - \
+    "${url}" \
+    -o "${out}"
+}
+
 install_hysteria() {
   if ! command -v hysteria >/dev/null 2>&1; then
     log "Установка Hysteria2..."
-    curl -fL --retry 10 --retry-all-errors --connect-timeout 15 --max-time 300 \
-      https://get.hy2.sh/ -o /tmp/get.hy2.sh
-    chmod +x /tmp/get.hy2.sh
-    bash /tmp/get.hy2.sh
+    local installer_path asset_name asset_url binary_path
+    mkdir -p "${INSTALL_TMP_DIR}"
+    installer_path="${INSTALL_TMP_DIR}/get.hy2.sh"
+
+    # Primary path: official bootstrap script.
+    if download_with_resume "https://get.hy2.sh/" "${installer_path}"; then
+      chmod +x "${installer_path}"
+      if bash "${installer_path}"; then
+        if command -v hysteria >/dev/null 2>&1; then
+          return
+        fi
+      fi
+    fi
+
+    warn "Установка через get.hy2.sh не удалась, пробую прямой бинарь из GitHub Releases..."
+    asset_name="$(detect_hysteria_asset)"
+    asset_url="https://github.com/apernet/hysteria/releases/latest/download/${asset_name}"
+    binary_path="${INSTALL_TMP_DIR}/hysteria"
+    download_with_resume "${asset_url}" "${binary_path}"
+    install -m 0755 "${binary_path}" /usr/local/bin/hysteria
+
+    if ! /usr/local/bin/hysteria version >/dev/null 2>&1; then
+      die "Hysteria бинарь скачан, но проверка версии не прошла."
+    fi
   else
     log "Hysteria2 уже установлен."
   fi
