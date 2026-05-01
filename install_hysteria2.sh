@@ -250,6 +250,7 @@ backup_old_config() {
 
 write_hysteria_config() {
   log "Запись ${CONFIG_PATH}..."
+  install -d -m 0755 /etc/hysteria
   if [[ "${FINAL_TLS_MODE}" == "certbot" ]]; then
     cat > "${CONFIG_PATH}" <<EOF
 listen: :443
