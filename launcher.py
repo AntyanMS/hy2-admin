@@ -34,7 +34,7 @@ def _run_hypercorn_tls(app: object, host: str, port: int, cert: str, key: str) -
 def main() -> None:
     _ensure_cwd()
     host = os.environ.get("PANEL_BIND_HOST", "0.0.0.0")
-    port = int(os.environ.get("PANEL_BIND_PORT", "8787"))
+    port = int(os.environ.get("PANEL_BIND_PORT", "18080"))
     cert = (os.environ.get("PANEL_TLS_CERT") or "").strip()
     key = (os.environ.get("PANEL_TLS_KEY") or "").strip()
 

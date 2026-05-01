@@ -452,7 +452,7 @@
       </details>
       {% endfor %}
     {% endif %}
-    <p class="muted" style="margin-bottom:0;">Локальное управление пользователями Hysteria2 на этом узле отключено. Отключайте HY2 на msgw только после готовности миграции — вручную, чтобы не оставлять клиентов без связи.</p>
+    <p class="muted" style="margin-bottom:0;">Локальное управление пользователями Hysteria2 на этом узле отключено. Отключайте HY2 только после готовности миграции — вручную, чтобы не оставлять клиентов без связи.</p>
   </div>
   {% endif %}
 
@@ -772,6 +772,7 @@
       <h2 style="margin-top:0;">Настройки сервера</h2>
       <div class="tabs server-inner-tabs" style="margin-bottom:12px; flex-wrap:wrap;">
         <button type="button" id="server-tab-general-btn" class="tab-btn active">Общие</button>
+        <button type="button" id="server-tab-direct-btn" class="tab-btn">Direct routing</button>
         <button type="button" id="server-tab-whitelist-btn" class="tab-btn">Белый список</button>
         <button type="button" id="server-tab-bw-btn" class="tab-btn">Лимиты скорости</button>
         <button type="button" id="server-tab-security-btn" class="tab-btn">Безопасность</button>
@@ -787,6 +788,141 @@
           {% endfor %}
         </select>
         <button type="submit" class="secondary-btn">Сохранить</button>
+      </form>
+
+      <hr style="border-color:#374151; opacity:.5; margin:14px 0;">
+      <h3 style="margin:0 0 8px; font-size:1rem;">Каскад: удалённые серверы</h3>
+      <p class="muted" style="margin:0 0 10px; font-size:0.85rem;">
+        Master: {% if cascade_state.master_enabled %}<strong>включен</strong>{% else %}<strong>выключен</strong>{% endif %},
+        узлов: {{ cascade_state.servers_count }}, активных exit: {{ cascade_state.exit_enabled_count }}.
+      </p>
+      <form method="post" action="{{ url_for('hy2.server_cascade_register_handler') }}" style="display:flex; flex-direction:column; gap:8px; margin-bottom:10px;">
+        <label>Registration token удалённого узла</label>
+        <textarea name="cascade_token" rows="3" placeholder="Вставьте token из register_remote_node.py">{{ defaults.cascade_token or '' }}</textarea>
+        <div class="server-grid">
+          <div>
+            <label>Имя (опционально)</label>
+            <input name="cascade_name" value="{{ defaults.cascade_name or '' }}" placeholder="например exit-node-1" maxlength="64">
+          </div>
+          <div>
+            <label style="display:flex; align-items:center; gap:8px; margin-top:30px;">
+              <input type="checkbox" name="cascade_mark_exit" value="1">
+              Сделать exit-узлом по умолчанию
+            </label>
+          </div>
+        </div>
+        <div class="actions" style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button type="submit">Добавить сервер</button>
+        </div>
+      </form>
+      <form method="post" action="{{ url_for('hy2.server_cascade_sync_now_handler') }}" style="margin:0 0 10px;">
+        <button type="submit" class="secondary-btn">Синхронизация сейчас</button>
+      </form>
+      {% if cascade_state.servers %}
+      <div style="overflow:auto;">
+        <table style="width:100%; border-collapse:collapse; font-size:0.9rem;">
+          <thead>
+            <tr>
+              <th style="text-align:left; padding:6px; border-bottom:1px solid #374151;">Узел</th>
+              <th style="text-align:left; padding:6px; border-bottom:1px solid #374151;">Роль</th>
+              <th style="text-align:left; padding:6px; border-bottom:1px solid #374151;">Статус</th>
+              <th style="text-align:left; padding:6px; border-bottom:1px solid #374151;">Последний sync</th>
+              <th style="text-align:left; padding:6px; border-bottom:1px solid #374151;">Действия</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in cascade_state.servers %}
+            <tr>
+              <td style="padding:6px; border-bottom:1px solid #1f2937;">
+                <strong>{{ r.name or r.node_id }}</strong><br>
+                <span class="muted">{{ r.host }}:{{ r.api_port }}</span>
+              </td>
+              <td style="padding:6px; border-bottom:1px solid #1f2937;">
+                {{ r.role }}{% if r.cascade_exit %} · <strong>exit</strong>{% endif %}
+              </td>
+              <td style="padding:6px; border-bottom:1px solid #1f2937;">
+                {% if r.enabled %}<span style="color:#4ade80;">enabled</span>{% else %}<span style="color:#fca5a5;">disabled</span>{% endif %}
+              </td>
+              <td style="padding:6px; border-bottom:1px solid #1f2937;">
+                {% if r.last_sync_at_local %}
+                  {% if r.last_sync_ok %}<span style="color:#4ade80;">ok</span>{% else %}<span style="color:#fca5a5;">fail</span>{% endif %}
+                  · {{ r.last_sync_result }}<br><span class="muted">{{ r.last_sync_at_local }}</span>
+                {% else %}
+                  <span class="muted">нет данных</span>
+                {% endif %}
+              </td>
+              <td style="padding:6px; border-bottom:1px solid #1f2937;">
+                <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                  <form method="post" action="{{ url_for('hy2.server_cascade_toggle_handler') }}" style="margin:0;">
+                    <input type="hidden" name="node_id" value="{{ r.node_id }}">
+                    <input type="hidden" name="action" value="{% if r.enabled %}disable{% else %}enable{% endif %}">
+                    <button type="submit" class="secondary-btn">{% if r.enabled %}Disable{% else %}Enable{% endif %}</button>
+                  </form>
+                  <form method="post" action="{{ url_for('hy2.server_cascade_toggle_handler') }}" style="margin:0;">
+                    <input type="hidden" name="node_id" value="{{ r.node_id }}">
+                    <input type="hidden" name="action" value="set-exit">
+                    <button type="submit" class="secondary-btn">Сделать exit</button>
+                  </form>
+                  <form method="post" action="{{ url_for('hy2.server_cascade_delete_handler') }}" style="margin:0;" onsubmit="return confirm('Удалить сервер из реестра каскада?');">
+                    <input type="hidden" name="node_id" value="{{ r.node_id }}">
+                    <button type="submit" class="danger-btn">Удалить</button>
+                  </form>
+                </div>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p class="muted">Удалённые узлы ещё не добавлены.</p>
+      {% endif %}
+
+      </div>
+
+      <div id="server-tab-direct" class="tab-panel server-sub-panel">
+      <h3 style="margin:0 0 8px; font-size:1rem;">Direct routing</h3>
+      {% if direct_state.load_error %}
+      <p class="muted">{{ direct_state.load_error }} · {{ direct_state.config_path }}</p>
+      {% else %}
+      <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:8px; margin-bottom:10px;">
+        <div class="muted">default outbound: <strong>{% if direct_state.has_default_outbound %}{{ direct_state.default_outbound_tag or 'да' }}{% else %}нет{% endif %}</strong></div>
+        <div class="muted">geoip-ru -> direct: <strong>{% if direct_state.has_geoip_ru_direct %}да{% else %}нет{% endif %}</strong></div>
+        <div class="muted">.ru/.рф/.su -> direct: <strong>{% if direct_state.has_ru_suffix_direct %}да{% else %}нет{% endif %}</strong></div>
+        <div class="muted">правил direct/default: <strong>{{ direct_state.direct_rule_count }}/{{ direct_state.default_rule_count }}</strong></div>
+      </div>
+      <p class="muted" style="margin:0 0 10px; font-size:0.8rem;">Источник: <code>{{ direct_state.config_path }}</code></p>
+      {% endif %}
+      <form method="post" action="{{ url_for('hy2.server_direct_routing_handler') }}">
+        <label>Явные хосты -> direct (по одному в строке)</label>
+        <textarea name="direct_explicit_hosts" rows="4" placeholder="2ip.ru&#10;www.2ip.ru">{{ defaults.direct_explicit_hosts or direct_state.explicit_hosts_text or '' }}</textarea>
+        <label>Суффиксы доменов -> direct (по одному в строке, с точкой)</label>
+        <textarea name="direct_ru_suffixes" rows="4" placeholder=".ru&#10;.xn--p1ai&#10;.su">{{ defaults.direct_ru_suffixes or direct_state.ru_suffixes_text or '' }}</textarea>
+        {% set direct_geoip_val = defaults.direct_geoip_ru if defaults.direct_geoip_ru else ('1' if direct_state.enable_geoip_ru else '') %}
+        {% set direct_default_enabled_val = defaults.direct_default_enabled if defaults.direct_default_enabled else ('1' if direct_state.enable_default_outbound else '') %}
+        {% set direct_default_tag_val = defaults.direct_default_outbound_tag or direct_state.default_outbound_tag or '' %}
+        <div class="server-grid">
+          <div>
+            <label style="display:flex; align-items:center; gap:8px;">
+              <input type="checkbox" name="direct_geoip_ru" value="1" {% if direct_geoip_val %}checked{% endif %}>
+              Включить правило geoip-ru -> direct
+            </label>
+          </div>
+          <div>
+            <label style="display:flex; align-items:center; gap:8px;">
+              <input type="checkbox" name="direct_default_enabled" value="1" {% if direct_default_enabled_val %}checked{% endif %}>
+              Включить default outbound
+            </label>
+          </div>
+        </div>
+        <label>Тег default outbound</label>
+        <select name="direct_default_outbound_tag">
+          <option value="">-- выбрать --</option>
+          {% for tag in direct_state.outbound_tags %}
+          <option value="{{ tag }}" {% if tag == direct_default_tag_val %}selected{% endif %}>{{ tag }}</option>
+          {% endfor %}
+        </select>
+        <div class="actions"><button type="submit">Сохранить direct routing правила</button></div>
       </form>
       </div>
 
@@ -879,7 +1015,7 @@
         </div>
 
         <div id="sec-panel-stub" class="tab-panel security-nested-panel">
-          <p class="muted" style="margin:0 0 10px; font-size:0.9rem;">Файл: <code>{{ https_stub.path }}</code>{% if https_stub.read_error %}<br><span style="color:#fca5a5;">{{ https_stub.read_error }}</span>{% endif %}<br>По умолчанию это тот же путь, что <code>root</code> для <code>location /</code> в <code>tools/msgw.mooo.com.nginx.conf</code> (<code>/var/www/msgw-https-root/index.html</code>). Иначе nginx отдаёт другой файл — страница не изменится. Переопределение: <code>HTTPS_ROOT_STUB_HTML_PATH</code> в <code>/opt/hy2-admin/.env</code>.</p>
+          <p class="muted" style="margin:0 0 10px; font-size:0.9rem;">Файл: <code>{{ https_stub.path }}</code>{% if https_stub.read_error %}<br><span style="color:#fca5a5;">{{ https_stub.read_error }}</span>{% endif %}<br>По умолчанию это путь <code>/var/www/hy2-site/index.html</code> (корневой файл для <code>location /</code> в nginx). Иначе nginx отдаёт другой файл — страница не изменится. Переопределение: <code>HTTPS_ROOT_STUB_HTML_PATH</code> в <code>/opt/hy2-admin/.env</code>.</p>
           <div class="stub-toolbar-row" style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:10px;">
             <form id="form-https-stub-apply" method="post" action="{{ url_for('hy2.server_https_stub_apply_handler') }}" style="margin:0; display:flex; flex-direction:column; gap:8px; flex:1; min-width:min(100%, 320px);">
               <div class="actions" style="display:flex; flex-wrap:wrap; gap:8px; margin:0;">
@@ -1261,11 +1397,13 @@
       }
 
       const serverTabGeneralBtn = document.getElementById("server-tab-general-btn");
+      const serverTabDirectBtn = document.getElementById("server-tab-direct-btn");
       const serverTabWhitelistBtn = document.getElementById("server-tab-whitelist-btn");
       const serverTabBwBtn = document.getElementById("server-tab-bw-btn");
       const serverTabSecurityBtn = document.getElementById("server-tab-security-btn");
       const serverTabAdminBtn = document.getElementById("server-tab-admin-btn");
       const serverTabGeneral = document.getElementById("server-tab-general");
+      const serverTabDirect = document.getElementById("server-tab-direct");
       const serverTabWhitelist = document.getElementById("server-tab-whitelist");
       const serverTabBw = document.getElementById("server-tab-bw");
       const serverTabSecurity = document.getElementById("server-tab-security");
@@ -1273,29 +1411,31 @@
 
       function setServerSubTab(name) {
         const gen = name === "general";
+        const dir = name === "direct";
         const wl = name === "whitelist";
         const bw = name === "bw";
         const sec = name === "security";
         const adm = name === "admin";
         if (serverTabGeneral) serverTabGeneral.classList.toggle("active", gen);
+        if (serverTabDirect) serverTabDirect.classList.toggle("active", dir);
         if (serverTabWhitelist) serverTabWhitelist.classList.toggle("active", wl);
         if (serverTabBw) serverTabBw.classList.toggle("active", bw);
         if (serverTabSecurity) serverTabSecurity.classList.toggle("active", sec);
         if (serverTabAdmin) serverTabAdmin.classList.toggle("active", adm);
         if (serverTabGeneralBtn) serverTabGeneralBtn.classList.toggle("active", gen);
+        if (serverTabDirectBtn) serverTabDirectBtn.classList.toggle("active", dir);
         if (serverTabWhitelistBtn) serverTabWhitelistBtn.classList.toggle("active", wl);
         if (serverTabBwBtn) serverTabBwBtn.classList.toggle("active", bw);
         if (serverTabSecurityBtn) serverTabSecurityBtn.classList.toggle("active", sec);
         if (serverTabAdminBtn) serverTabAdminBtn.classList.toggle("active", adm);
       }
 
-      if (serverTabGeneralBtn && serverTabWhitelistBtn && serverTabBwBtn && serverTabSecurityBtn && serverTabAdminBtn) {
-        serverTabGeneralBtn.addEventListener("click", function () { setServerSubTab("general"); });
-        serverTabWhitelistBtn.addEventListener("click", function () { setServerSubTab("whitelist"); });
-        serverTabBwBtn.addEventListener("click", function () { setServerSubTab("bw"); });
-        serverTabSecurityBtn.addEventListener("click", function () { setServerSubTab("security"); });
-        serverTabAdminBtn.addEventListener("click", function () { setServerSubTab("admin"); });
-      }
+      if (serverTabGeneralBtn) serverTabGeneralBtn.addEventListener("click", function () { setServerSubTab("general"); });
+      if (serverTabDirectBtn) serverTabDirectBtn.addEventListener("click", function () { setServerSubTab("direct"); });
+      if (serverTabWhitelistBtn) serverTabWhitelistBtn.addEventListener("click", function () { setServerSubTab("whitelist"); });
+      if (serverTabBwBtn) serverTabBwBtn.addEventListener("click", function () { setServerSubTab("bw"); });
+      if (serverTabSecurityBtn) serverTabSecurityBtn.addEventListener("click", function () { setServerSubTab("security"); });
+      if (serverTabAdminBtn) serverTabAdminBtn.addEventListener("click", function () { setServerSubTab("admin"); });
 
       (function applyHashMainTabs() {
         var h = (location.hash || "").replace(/^#/, "");

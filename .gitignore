@@ -14,6 +14,10 @@ __pycache__/
 .env.*
 *.log
 **/backups/
+.backup/
 *.pem
 *.key
 local-config*.json
+
+# Локальные рабочие заметки/сессии Cursor
+.cursor/

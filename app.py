@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import hmac
 import html
 import io
 import ipaddress
@@ -56,7 +57,7 @@ SERVER_PORT = ENV.get("SERVER_PORT", "")
 SERVER_SNI = ENV.get("SERVER_SNI", "")
 INSECURE = ENV.get("CLIENT_INSECURE", "0") == "1"
 BIND_HOST = ENV.get("PANEL_BIND_HOST", "127.0.0.1")
-BIND_PORT = int(ENV.get("PANEL_BIND_PORT", "8787"))
+BIND_PORT = int(ENV.get("PANEL_BIND_PORT", "18080"))
 PANEL_SYSTEMD_SERVICE = ENV.get("PANEL_SYSTEMD_SERVICE", "hy2-admin.service").strip() or "hy2-admin.service"
 PROTECTED_USERS_RAW = ENV.get("PROTECTED_USERS", "")
 SING_BOX_CONFIG_PATH = ENV.get("SING_BOX_CONFIG_PATH", "/etc/sing-box/config.json")
@@ -70,6 +71,7 @@ USER_NOTES_PATH = Path("/opt/hy2-admin/data/user_notes.json")
 USER_IP_STATE_PATH = Path("/opt/hy2-admin/data/user_ip_state.json")
 WHITELIST_STATE_PATH = Path("/opt/hy2-admin/data/russia-whitelist/state.json")
 WHITELIST_SYNC_SCRIPT = Path("/opt/hy2-admin/whitelist_sync.py")
+CASCADE_REMOTE_SERVERS_PATH = Path("/opt/hy2-admin/data/cascade/remote_servers.json")
 
 
 def _app_root() -> Path:
@@ -90,7 +92,7 @@ def _whitelist_python() -> Path:
 
 WHITELIST_PYTHON = _whitelist_python()
 F2B_JAIL_PATH = Path("/etc/fail2ban/jail.d/hy2-admin.local")
-# HTML для HTTPS-заглушки (например корень msgw.mooo.com). Переопределение: HTTPS_ROOT_STUB_HTML_PATH в .env
+# HTML для HTTPS-заглушки корневого сайта. Переопределение: HTTPS_ROOT_STUB_HTML_PATH в .env
 HTTPS_ROOT_STUB_MAX_BYTES = 512 * 1024
 # Всегда в ignoreip (fail2ban [DEFAULT]): SSH и панель.
 F2B_ALWAYS_IGNORE_IPS = (
@@ -848,7 +850,6 @@ def make_client_url(
     speed_up_mbps: float | None = None,
     speed_down_mbps: float | None = None,
 ) -> str:
-    user_enc = quote(username, safe="")
     pass_enc = quote(password, safe="")
     query_parts = [f"sni={quote(sni, safe='')}"]
     if INSECURE:
@@ -858,7 +859,8 @@ def make_client_url(
     if isinstance(speed_down_mbps, (int, float)) and float(speed_down_mbps) > 0:
         query_parts.append(f"downmbps={float(speed_down_mbps):g}")
     query = "&".join(query_parts)
-    return f"hysteria2://{user_enc}:{pass_enc}@{host}:{port}/?{query}#{quote(username, safe='')}"
+    # Hiddify expects password-only HY2 URI format in userinfo.
+    return f"hysteria2://{pass_enc}@{host}:{port}/?{query}#{quote(username, safe='')}"
 
 
 def make_qr_png(text: str) -> bytes:
@@ -923,6 +925,43 @@ def fetch_stats_json(base_url: str, endpoint: str, secret: str) -> dict:
     return decoded
 
 
+def get_singbox_recent_online_counts(window_seconds: int = 300) -> dict[str, int]:
+    """Best-effort online users from recent sing-box logs.
+
+    sing-box has no trafficStats API like hysteria, so when hysteria stats are
+    unavailable we infer online users from recent authenticated in-hy2 entries.
+    """
+    since = f"{max(10, int(window_seconds))} seconds ago"
+    cmd = [
+        "journalctl",
+        "-u",
+        "sing-box",
+        "--since",
+        since,
+        "--no-pager",
+        "-o",
+        "cat",
+    ]
+    try:
+        out = subprocess.check_output(cmd, text=True, timeout=3)
+    except (subprocess.SubprocessError, OSError):
+        return {}
+
+    seen_users: set[str] = set()
+    for line in out.splitlines():
+        # Example: inbound/hysteria2[in-hy2]: [antyanmsa] inbound connection to ...
+        m = re.search(r"inbound/hysteria2\[in-hy2\]:\s*\[([^\]]+)\]\s+inbound\s+(?:packet\s+)?connection", line)
+        if not m:
+            continue
+        key = str(m.group(1)).strip().lower()
+        if not key:
+            continue
+        seen_users.add(key)
+    # In sing-box log fallback we only infer "online recently", not exact
+    # concurrent stream count, so keep one active session marker per user.
+    return {u: 1 for u in seen_users}
+
+
 def get_hy2_stats(cfg: dict) -> dict:
     stats_cfg = cfg.get("trafficStats")
     if not isinstance(stats_cfg, dict):
@@ -946,18 +985,22 @@ def get_hy2_stats(cfg: dict) -> dict:
         traffic_raw = fetch_stats_json(base_url, "/traffic", secret)
         online_raw = fetch_stats_json(base_url, "/online", secret)
     except (ValueError, URLError, TimeoutError, json.JSONDecodeError) as e:
+        fallback_online = get_singbox_recent_online_counts()
+        users = build_cumulative_stats({}, fallback_online) if fallback_online else {}
+        online_connections = sum(v["online_count"] for v in users.values())
+        online_users = sum(1 for v in users.values() if v["is_online"])
         return {
             "enabled": True,
             "error": f"Traffic API недоступен: {e}",
-            "online_users": 0,
-            "online_connections": 0,
+            "online_users": online_users,
+            "online_connections": online_connections,
             "sum_rx": 0,
             "sum_tx": 0,
             "sum_total": 0,
             "sum_rx_h": "0 B",
             "sum_tx_h": "0 B",
             "sum_total_h": "0 B",
-            "users": {},
+            "users": users,
         }
 
     traffic = {}
@@ -1170,6 +1213,383 @@ def load_user_ip_state() -> dict:
 def save_user_ip_state(data: dict) -> None:
     USER_IP_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     USER_IP_STATE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _is_cascade_master_enabled() -> bool:
+    raw = (ENV.get("CASCADE_MASTER_ENABLED") or "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _cascade_sync_timeout() -> int:
+    raw = (ENV.get("CASCADE_SYNC_TIMEOUT_SEC") or "8").strip()
+    try:
+        val = int(raw)
+    except ValueError:
+        return 8
+    return max(3, min(val, 30))
+
+
+def _load_cascade_remote_servers() -> list[dict]:
+    if not CASCADE_REMOTE_SERVERS_PATH.exists():
+        return []
+    try:
+        data = json.loads(CASCADE_REMOTE_SERVERS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    servers = data.get("servers")
+    if not isinstance(servers, list):
+        return []
+    out: list[dict] = []
+    for item in servers:
+        if not isinstance(item, dict):
+            continue
+        if not item.get("enabled", True):
+            continue
+        if str(item.get("role", "")).strip().lower() != "exit":
+            continue
+        host = str(item.get("host", "")).strip()
+        api_port = int(item.get("api_port", 0) or 0)
+        secret = str(item.get("api_secret", "")).strip()
+        if not host or api_port <= 0 or not secret:
+            continue
+        out.append(item)
+    return out
+
+
+def _build_cascade_users_snapshot() -> dict:
+    cfg = load_hy2_config()
+    return {
+        "auth_userpass": dict(cfg.get("auth", {}).get("userpass", {})),
+        "user_state": load_user_state(),
+        "user_meta": load_user_meta(),
+        "user_notes": load_user_notes(),
+        "user_ip_state": load_user_ip_state(),
+    }
+
+
+def _send_cascade_payload(remote: dict, payload: dict) -> tuple[bool, str]:
+    secret = str(remote.get("api_secret", "")).strip()
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    signature = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    url = f"http://{remote['host']}:{int(remote['api_port'])}/sync/full-users"
+    req = Request(
+        url=url,
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "X-Cascade-Signature": signature,
+            "X-Cascade-Node": str(remote.get("node_id", "")),
+        },
+    )
+    try:
+        with urlopen(req, timeout=_cascade_sync_timeout()) as resp:
+            code = int(getattr(resp, "status", 200))
+            if 200 <= code < 300:
+                return True, f"ok:{code}"
+            return False, f"http:{code}"
+    except URLError as e:
+        return False, f"urlerror:{e}"
+    except Exception as e:
+        return False, f"error:{e}"
+
+
+def cascade_sync_users_best_effort(reason: str) -> None:
+    if not _is_cascade_master_enabled():
+        return
+    remotes = _load_cascade_remote_servers()
+    if not remotes:
+        return
+    payload = {
+        "source": "gateway",
+        "reason": reason,
+        "ts": int(time.time()),
+        "snapshot": _build_cascade_users_snapshot(),
+    }
+    status_rows: list[dict] = []
+    for remote in remotes:
+        ok, msg = _send_cascade_payload(remote, payload)
+        status_rows.append(
+            {
+                "node_id": remote.get("node_id", ""),
+                "name": remote.get("name", ""),
+                "host": remote.get("host", ""),
+                "ok": ok,
+                "result": msg,
+                "at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+    try:
+        p = Path("/opt/hy2-admin/data/cascade/last_sync_status.json")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"reason": reason, "rows": status_rows}, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _b64url_decode(raw: str) -> bytes:
+    s = (raw or "").strip()
+    if not s:
+        return b""
+    pad = "=" * ((4 - len(s) % 4) % 4)
+    return base64.urlsafe_b64decode((s + pad).encode("utf-8"))
+
+
+def _load_cascade_db() -> dict:
+    if not CASCADE_REMOTE_SERVERS_PATH.exists():
+        return {"servers": []}
+    try:
+        data = json.loads(CASCADE_REMOTE_SERVERS_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {"servers": []}
+    servers = data.get("servers")
+    if not isinstance(servers, list):
+        data["servers"] = []
+    return data
+
+
+def _save_cascade_db(data: dict) -> None:
+    CASCADE_REMOTE_SERVERS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CASCADE_REMOTE_SERVERS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _parse_cascade_registration_token(raw: str) -> dict:
+    payload = json.loads(_b64url_decode(raw).decode("utf-8"))
+    required = ("node_id", "name", "host", "api_port", "api_secret", "fingerprint", "issued_at", "role")
+    missing = [k for k in required if k not in payload]
+    if missing:
+        raise ValueError(f"Токен неполный: отсутствуют {', '.join(missing)}")
+    return payload
+
+
+def read_cascade_ui_state() -> dict:
+    db = _load_cascade_db()
+    servers_raw = db.get("servers") or []
+    servers: list[dict] = []
+    for item in servers_raw:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role", "")).strip().lower() or "exit"
+        servers.append(
+            {
+                "node_id": str(item.get("node_id", "")),
+                "name": str(item.get("name", "")),
+                "host": str(item.get("host", "")),
+                "api_port": int(item.get("api_port", 0) or 0),
+                "enabled": bool(item.get("enabled", True)),
+                "role": role,
+                "cascade_exit": bool(item.get("cascade_exit", False)),
+                "fingerprint": str(item.get("fingerprint", "")),
+                "issued_at": str(item.get("issued_at", "")),
+            }
+        )
+
+    status_rows_map: dict[str, dict] = {}
+    for p in (
+        Path("/opt/hy2-admin/data/cascade/master_sync_state.json"),
+        Path("/opt/hy2-admin/data/cascade/last_sync_status.json"),
+    ):
+        if not p.exists():
+            continue
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        rows = d.get("rows")
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            node_id = str(row.get("node_id", ""))
+            if not node_id:
+                continue
+            status_rows_map[node_id] = {
+                "ok": bool(row.get("ok", False)),
+                "result": str(row.get("result", "")),
+                "at": str(row.get("at", "")),
+            }
+
+    for s in servers:
+        st = status_rows_map.get(s["node_id"], {})
+        s["last_sync_ok"] = bool(st.get("ok", False))
+        s["last_sync_result"] = str(st.get("result", "нет данных"))
+        s["last_sync_at"] = str(st.get("at", ""))
+        s["last_sync_at_local"] = (
+            format_whitelist_last_sync_display(s["last_sync_at"], get_panel_timezone()) if s["last_sync_at"] else ""
+        )
+
+    exit_enabled = [s for s in servers if s["enabled"] and s["role"] == "exit" and s["cascade_exit"]]
+    return {
+        "master_enabled": _is_cascade_master_enabled(),
+        "servers": sorted(servers, key=lambda x: (x["name"] or x["host"] or x["node_id"]).lower()),
+        "servers_count": len(servers),
+        "exit_enabled_count": len(exit_enabled),
+    }
+
+
+def read_direct_routing_state() -> dict:
+    p = Path(SING_BOX_CONFIG_PATH)
+    out = {
+        "config_path": str(p),
+        "load_error": "",
+        "has_default_outbound": False,
+        "has_geoip_ru_direct": False,
+        "has_ru_suffix_direct": False,
+        "direct_rule_count": 0,
+        "default_rule_count": 0,
+        "default_outbound_tag": "",
+        "outbound_tags": [],
+    }
+    if not p.exists():
+        out["load_error"] = "Файл конфигурации sing-box не найден"
+        return out
+    try:
+        cfg = json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        out["load_error"] = f"Ошибка чтения sing-box: {e}"
+        return out
+
+    outbounds = cfg.get("outbounds") if isinstance(cfg, dict) else None
+    if isinstance(outbounds, list):
+        for ob in outbounds:
+            if not isinstance(ob, dict):
+                continue
+            tag = str(ob.get("tag", "")).strip()
+            if tag and tag not in out["outbound_tags"]:
+                out["outbound_tags"].append(tag)
+
+    route = cfg.get("route") if isinstance(cfg, dict) else None
+    rules = route.get("rules") if isinstance(route, dict) else []
+    if not isinstance(rules, list):
+        rules = []
+    ru_suffixes = {".ru", ".xn--p1ai", ".su"}
+
+    for r in rules:
+        if not isinstance(r, dict):
+            continue
+        outbound = str(r.get("outbound", "")).strip()
+        if outbound == "direct":
+            out["direct_rule_count"] += 1
+            rs = r.get("rule_set")
+            if isinstance(rs, list) and "geoip-ru" in rs:
+                out["has_geoip_ru_direct"] = True
+            ds = r.get("domain_suffix")
+            if isinstance(ds, list):
+                if ru_suffixes.issubset({str(x).strip() for x in ds}):
+                    out["has_ru_suffix_direct"] = True
+        elif outbound and outbound != "direct":
+            out["default_rule_count"] += 1
+            if len(r.keys()) == 1:
+                out["has_default_outbound"] = True
+                if not out["default_outbound_tag"]:
+                    out["default_outbound_tag"] = outbound
+    out["explicit_hosts_text"] = ""
+    out["ru_suffixes_text"] = ".ru\n.xn--p1ai\n.su"
+    out["enable_geoip_ru"] = out["has_geoip_ru_direct"]
+    out["enable_default_outbound"] = out["has_default_outbound"]
+    if not out["default_outbound_tag"] and out["outbound_tags"]:
+        preferred = [t for t in out["outbound_tags"] if t not in {"direct", "block", "dns-out"}]
+        out["default_outbound_tag"] = preferred[0] if preferred else out["outbound_tags"][0]
+    for r in rules:
+        if not isinstance(r, dict):
+            continue
+        if str(r.get("outbound", "")).strip() != "direct":
+            continue
+        dom = r.get("domain")
+        if isinstance(dom, list) and dom:
+            out["explicit_hosts_text"] = "\n".join(str(x).strip() for x in dom if str(x).strip())
+        ds = r.get("domain_suffix")
+        if isinstance(ds, list) and ds:
+            out["ru_suffixes_text"] = "\n".join(str(x).strip() for x in ds if str(x).strip())
+    return out
+
+
+def _split_tokens(raw: str) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for part in re.split(r"[\s,;]+", str(raw or "").strip()):
+        v = part.strip()
+        if not v:
+            continue
+        if v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out
+
+
+def _is_direct_explicit_rule(rule: dict) -> bool:
+    return isinstance(rule.get("domain"), list) and str(rule.get("outbound", "")).strip() == "direct"
+
+
+def _is_direct_suffix_rule(rule: dict) -> bool:
+    return isinstance(rule.get("domain_suffix"), list) and str(rule.get("outbound", "")).strip() == "direct"
+
+
+def _is_geoip_ru_rule(rule: dict) -> bool:
+    if str(rule.get("outbound", "")).strip() != "direct":
+        return False
+    rs = rule.get("rule_set")
+    return isinstance(rs, list) and "geoip-ru" in rs
+
+
+def _is_non_direct_default_rule(rule: dict) -> bool:
+    outbound = str(rule.get("outbound", "")).strip()
+    return bool(outbound) and outbound != "direct" and len(rule.keys()) == 1
+
+
+def apply_direct_routing_rules(
+    *,
+    explicit_hosts: list[str],
+    ru_suffixes: list[str],
+    enable_geoip_ru: bool,
+    enable_default_outbound: bool,
+    default_outbound_tag: str,
+) -> None:
+    p = Path(SING_BOX_CONFIG_PATH)
+    if not p.exists():
+        raise ValueError(f"Файл не найден: {SING_BOX_CONFIG_PATH}")
+    try:
+        cfg = json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        raise ValueError(f"Ошибка чтения JSON: {e}") from e
+    if not isinstance(cfg, dict):
+        raise ValueError("Корень JSON должен быть объектом")
+    route = cfg.get("route")
+    if not isinstance(route, dict):
+        route = {}
+        cfg["route"] = route
+    rules = route.get("rules")
+    if not isinstance(rules, list):
+        rules = []
+
+    kept: list = []
+    for item in rules:
+        if not isinstance(item, dict):
+            kept.append(item)
+            continue
+        if _is_direct_explicit_rule(item):
+            continue
+        if _is_direct_suffix_rule(item):
+            continue
+        if _is_geoip_ru_rule(item):
+            continue
+        if _is_non_direct_default_rule(item):
+            continue
+        kept.append(item)
+
+    new_rules: list = []
+    if explicit_hosts:
+        new_rules.append({"domain": explicit_hosts, "outbound": "direct"})
+    if ru_suffixes:
+        new_rules.append({"domain_suffix": ru_suffixes, "outbound": "direct"})
+    if enable_geoip_ru:
+        new_rules.append({"rule_set": ["geoip-ru"], "outbound": "direct"})
+    new_rules.extend(kept)
+    if enable_default_outbound and default_outbound_tag:
+        new_rules.append({"outbound": default_outbound_tag})
+    route["rules"] = new_rules
+    p.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def extract_ip_from_remote_addr(addr: str) -> str:
@@ -1578,8 +1998,8 @@ def read_server_blacklist() -> dict:
         return {"entries": [], "error": str(e)}
 
 
-# Эталон HTTPS-заглушки: tools/msgw-https-root-stub/index.html (для «Вернуть исходное»). При правке файла пересоберите base64 в эту константу.
-_DEFAULT_MSGW_HTTPS_ROOT_STUB_B64 = (
+# Эталон HTTPS-заглушки: tools/https-root-stub/index.html (для «Вернуть исходное»). При правке файла пересоберите base64 в эту константу.
+_DEFAULT_HTTPS_ROOT_STUB_B64 = (
     'PCFkb2N0eXBlIGh0bWw+CjxodG1sIGxhbmc9ImVuIj4KPGhlYWQ+CiAgPG1ldGEgY2hhcnNldD0idXRmLTgiIC8+'
     'CiAgPG1ldGEgbmFtZT0idmlld3BvcnQiIGNvbnRlbnQ9IndpZHRoPWRldmljZS13aWR0aCwgaW5pdGlhbC1zY2Fs'
     'ZT0xIiAvPgogIDx0aXRsZT5tc2d3Lm1vb28uY29tPC90aXRsZT4KICA8c3R5bGU+CiAgICAqIHsgYm94LXNpemlu'
@@ -1659,13 +2079,13 @@ def https_root_stub_html_path() -> Path:
     raw = (ENV.get("HTTPS_ROOT_STUB_HTML_PATH") or "").strip()
     if raw:
         return Path(raw)
-    # Как в tools/msgw.mooo.com.nginx.conf: location / { root /var/www/msgw-https-root; ... }
-    return Path("/var/www/msgw-https-root/index.html")
+    # Стандартный путь root-заглушки для location /.
+    return Path("/var/www/hy2-site/index.html")
 
 
 def bundled_default_https_root_stub_html() -> str:
-    """Эталонная заглушка msgw.mooo.com (canvas), зашита в код панели — «Вернуть исходное» (как tools/msgw-https-root-stub/index.html)."""
-    return base64.b64decode(_DEFAULT_MSGW_HTTPS_ROOT_STUB_B64).decode("utf-8")
+    """Эталонная зашитая заглушка для «Вернуть исходное» (как tools/https-root-stub/index.html)."""
+    return base64.b64decode(_DEFAULT_HTTPS_ROOT_STUB_B64).decode("utf-8")
 
 def build_https_stub_panel_view(merged_defaults: dict) -> dict:
     path = https_root_stub_html_path()
@@ -1821,6 +2241,7 @@ def update_single_user_limits(
         speed_down_mbps,
         max_connections,
     )
+    cascade_sync_users_best_effort("update_single_user_limits")
 
 
 def remove_users_from_meta(usernames: list[str]) -> None:
@@ -1931,6 +2352,8 @@ def enforce_limits_if_needed() -> None:
         write_config_with_backup_and_restart(cfg)
     if changed_state:
         save_user_state(state)
+    if changed_cfg or changed_state:
+        cascade_sync_users_best_effort("enforce_limits_if_needed")
 
 def restart_hy2_or_rollback(backup_path: Path) -> None:
     restart = subprocess.run(["systemctl", "restart", HY2_SERVICE], capture_output=True, text=True)
@@ -2190,6 +2613,7 @@ def apply_users(
         speed_down_mbps,
         max_connections,
     )
+    cascade_sync_users_best_effort("apply_users")
     return results, skipped
 
 
@@ -2214,6 +2638,7 @@ def toggle_user(username: str, action: str) -> str:
             "disabled_at": datetime.now(timezone.utc).isoformat(),
         }
         save_user_state(state)
+        cascade_sync_users_best_effort("toggle_user_disable")
         return "Пользователь отключен"
 
     if username in up:
@@ -2226,6 +2651,7 @@ def toggle_user(username: str, action: str) -> str:
     write_config_with_backup_and_restart(cfg)
     disabled.pop(username, None)
     save_user_state(state)
+    cascade_sync_users_best_effort("toggle_user_enable")
     return "Пользователь включен"
 
 
@@ -2242,6 +2668,7 @@ def reset_user_password_random(username: str) -> str:
     if username in up:
         up[username] = new_pass
         write_config_with_backup_and_restart(cfg)
+        cascade_sync_users_best_effort("reset_user_password_random_active")
         return f"Пароль пользователя {username} обновлен (рандомный)"
 
     rec = disabled.get(username)
@@ -2249,6 +2676,7 @@ def reset_user_password_random(username: str) -> str:
         rec["password"] = new_pass
         disabled[username] = rec
         save_user_state(state)
+        cascade_sync_users_best_effort("reset_user_password_random_disabled")
         return f"Пароль пользователя {username} обновлен (клиент выключен)"
 
     raise ValueError("Пользователь не найден")
@@ -2326,6 +2754,8 @@ def delete_users(scope: str, mode: str, selected: list[str]) -> str:
     remove_users_from_meta(deleted_usernames)
     remove_users_from_notes(deleted_usernames)
     remove_users_from_ip_state(deleted_usernames)
+    if changed_active or changed_state:
+        cascade_sync_users_best_effort("delete_users")
 
     if deleted_count == 0 and skipped_protected == 0:
         return "Ничего не удалено"
@@ -2479,6 +2909,11 @@ def base_defaults() -> dict:
         "logs_since_minutes": "180",
         "logs_limit": "200",
         "panel_prefix_secret": "",
+        "direct_explicit_hosts": "",
+        "direct_ru_suffixes": "",
+        "direct_geoip_ru": "",
+        "direct_default_enabled": "",
+        "direct_default_outbound_tag": "",
     }
 
 
@@ -2567,6 +3002,8 @@ def render_index_page(
         panel_url_prefix_display=get_live_effective_panel_url_prefix(),
         panel_insecure_debug_strip_prefix=INSECURE_DEBUG_STRIP_PREFIX,
         panel_systemd_service=PANEL_SYSTEMD_SERVICE,
+        cascade_state=read_cascade_ui_state(),
+        direct_state=read_direct_routing_state(),
     )
 
 
@@ -3010,6 +3447,161 @@ def server_panel_url_prefix_handler():
         )
 
 
+@bp.route("/server/cascade/register", methods=["POST"])
+@requires_auth
+def server_cascade_register_handler():
+    token_raw = (request.form.get("cascade_token") or "").strip()
+    mark_exit = (request.form.get("cascade_mark_exit") or "") in {"1", "on", "true", "yes"}
+    alias = (request.form.get("cascade_name") or "").strip()
+    try:
+        if not token_raw:
+            raise ValueError("Вставьте registration token")
+        payload = _parse_cascade_registration_token(token_raw)
+        if alias:
+            payload["name"] = alias
+        db = _load_cascade_db()
+        servers = [s for s in (db.get("servers") or []) if isinstance(s, dict) and s.get("node_id") != payload["node_id"]]
+        payload["enabled"] = True
+        payload["cascade_exit"] = bool(mark_exit)
+        servers.append(payload)
+        if mark_exit:
+            for s in servers:
+                if s.get("node_id") != payload["node_id"]:
+                    s["cascade_exit"] = False
+        db["servers"] = servers
+        _save_cascade_db(db)
+        cascade_sync_users_best_effort("register_remote_ui")
+        return render_index_page(ok_message=f"Каскад-узел добавлен: {payload.get('name') or payload.get('host')}")
+    except Exception as e:
+        return render_index_page(
+            defaults={"cascade_token": token_raw, "cascade_name": alias},
+            error_message=f"Регистрация узла: {e}",
+        )
+
+
+@bp.route("/server/cascade/toggle", methods=["POST"])
+@requires_auth
+def server_cascade_toggle_handler():
+    node_id = (request.form.get("node_id") or "").strip()
+    action = (request.form.get("action") or "").strip().lower()
+    try:
+        if not node_id:
+            raise ValueError("node_id не передан")
+        db = _load_cascade_db()
+        servers = db.get("servers") or []
+        hit = None
+        for item in servers:
+            if isinstance(item, dict) and str(item.get("node_id")) == node_id:
+                hit = item
+                break
+        if not isinstance(hit, dict):
+            raise ValueError("Узел не найден")
+        if action == "enable":
+            hit["enabled"] = True
+        elif action == "disable":
+            hit["enabled"] = False
+        elif action == "set-exit":
+            hit["cascade_exit"] = True
+            hit["enabled"] = True
+            for s in servers:
+                if isinstance(s, dict) and s is not hit:
+                    s["cascade_exit"] = False
+        else:
+            raise ValueError("Неизвестное действие")
+        db["servers"] = servers
+        _save_cascade_db(db)
+        if action in {"enable", "set-exit"}:
+            cascade_sync_users_best_effort("toggle_remote_ui")
+        return render_index_page(ok_message="Настройки узла обновлены")
+    except Exception as e:
+        return render_index_page(error_message=f"Узел каскада: {e}")
+
+
+@bp.route("/server/cascade/delete", methods=["POST"])
+@requires_auth
+def server_cascade_delete_handler():
+    node_id = (request.form.get("node_id") or "").strip()
+    try:
+        if not node_id:
+            raise ValueError("node_id не передан")
+        db = _load_cascade_db()
+        old = db.get("servers") or []
+        new = [s for s in old if not (isinstance(s, dict) and str(s.get("node_id")) == node_id)]
+        if len(new) == len(old):
+            raise ValueError("Узел не найден")
+        db["servers"] = new
+        _save_cascade_db(db)
+        return render_index_page(ok_message="Узел удалён из реестра каскада")
+    except Exception as e:
+        return render_index_page(error_message=f"Удаление узла: {e}")
+
+
+@bp.route("/server/cascade/sync-now", methods=["POST"])
+@requires_auth
+def server_cascade_sync_now_handler():
+    try:
+        cascade_sync_users_best_effort("manual_sync_ui")
+        return render_index_page(ok_message="Синхронизация каскада запущена")
+    except Exception as e:
+        return render_index_page(error_message=f"Синхронизация каскада: {e}")
+
+
+@bp.route("/server/direct-routing", methods=["POST"])
+@requires_auth
+def server_direct_routing_handler():
+    explicit_raw = request.form.get("direct_explicit_hosts", "")
+    suffixes_raw = request.form.get("direct_ru_suffixes", "")
+    enable_geoip_ru = (request.form.get("direct_geoip_ru") or "") in {"1", "on", "true", "yes"}
+    enable_default = (request.form.get("direct_default_enabled") or "") in {"1", "on", "true", "yes"}
+    default_outbound_tag = (request.form.get("direct_default_outbound_tag") or "").strip()
+    try:
+        explicit_hosts = _split_tokens(explicit_raw)
+        ru_suffixes = _split_tokens(suffixes_raw)
+        for h in explicit_hosts:
+            if "/" in h or ":" in h:
+                raise ValueError(f"Недопустимый hostname: {h}")
+        for s in ru_suffixes:
+            if not s.startswith("."):
+                raise ValueError(f"Суффикс должен начинаться с точки: {s}")
+        state = read_direct_routing_state()
+        available_tags = [str(x) for x in state.get("outbound_tags", []) if isinstance(x, str)]
+        if enable_default:
+            if not default_outbound_tag:
+                raise ValueError("Выберите тег default outbound")
+            if available_tags and default_outbound_tag not in available_tags:
+                raise ValueError(f"Тег не найден в sing-box: {default_outbound_tag}")
+        apply_direct_routing_rules(
+            explicit_hosts=explicit_hosts,
+            ru_suffixes=ru_suffixes,
+            enable_geoip_ru=enable_geoip_ru,
+            enable_default_outbound=enable_default,
+            default_outbound_tag=default_outbound_tag,
+        )
+        sing_active = subprocess.run(
+            ["systemctl", "is-active", "sing-box"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if sing_active.returncode == 0 and sing_active.stdout.strip() == "active":
+            subprocess.run(["systemctl", "restart", "sing-box"], capture_output=True, text=True, timeout=40)
+            msg = "Direct routing правила сохранены, sing-box перезапущен"
+        else:
+            msg = "Direct routing правила сохранены"
+        return render_index_page(ok_message=msg)
+    except Exception as e:
+        return render_index_page(
+            defaults={
+                "direct_explicit_hosts": explicit_raw,
+                "direct_ru_suffixes": suffixes_raw,
+                "direct_geoip_ru": "1" if enable_geoip_ru else "",
+                "direct_default_enabled": "1" if enable_default else "",
+                "direct_default_outbound_tag": default_outbound_tag,
+            },
+            error_message=f"Direct routing: {e}",
+        )
+
+
 @bp.route("/server/whitelist-sync", methods=["POST"])
 @requires_auth
 def server_whitelist_sync_handler():
@@ -3129,7 +3721,7 @@ def server_https_stub_revert_handler():
     try:
         write_https_root_stub_atomic(bundled_default_https_root_stub_html())
         return render_index_page(
-            ok_message="Восстановлена исходная заглушка (как tools/msgw-https-root-stub/index.html, зашита в код панели)."
+            ok_message="Восстановлена исходная заглушка (как tools/https-root-stub/index.html, зашита в код панели)."
         )
     except Exception as e:
         return render_index_page(error_message=str(e))
