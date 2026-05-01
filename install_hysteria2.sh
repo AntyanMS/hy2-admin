@@ -395,6 +395,23 @@ configure_ufw() {
 }
 
 start_service() {
+  if [[ ! -f "/etc/systemd/system/${SERVICE_NAME}" ]]; then
+    cat > "/etc/systemd/system/${SERVICE_NAME}" <<'EOF'
+[Unit]
+Description=Hysteria Server Service (config.yaml)
+After=network.target nss-lookup.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/hysteria server --config /etc/hysteria/config.yaml
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  fi
   systemctl daemon-reload
   systemctl enable "${SERVICE_NAME}"
   systemctl restart "${SERVICE_NAME}"
