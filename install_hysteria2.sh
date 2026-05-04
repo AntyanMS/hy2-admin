@@ -138,7 +138,7 @@ install_packages() {
   log "Обновление пакетов..."
   apt-get update -y
   DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
-  DEBIAN_FRONTEND=noninteractive apt-get install -y curl openssl ufw fail2ban
+  DEBIAN_FRONTEND=noninteractive apt-get install -y curl openssl ufw fail2ban nginx
 }
 
 detect_hysteria_asset() {
@@ -237,6 +237,62 @@ prepare_site_stub() {
 <html><head><meta charset="utf-8"><title>Site</title></head>
 <body><h1>OK</h1></body></html>
 HTML
+}
+
+configure_nginx_https_stub() {
+  local cert key site_path ssl_dir
+  site_path="/etc/nginx/sites-available/hy2-site.conf"
+  cert="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
+  key="/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
+
+  if [[ ! -f "${cert}" || ! -f "${key}" ]]; then
+    # Fallback for acme mode or missing LE certs: keep 443/tcp open with self-signed cert.
+    ssl_dir="/etc/ssl/hy2-site"
+    install -d -m 0755 "${ssl_dir}"
+    cert="${ssl_dir}/fullchain.pem"
+    key="${ssl_dir}/privkey.pem"
+    if [[ ! -f "${cert}" || ! -f "${key}" ]]; then
+      openssl req -x509 -nodes -newkey rsa:2048 \
+        -keyout "${key}" \
+        -out "${cert}" \
+        -days 365 \
+        -subj "/CN=${DOMAIN}" >/dev/null 2>&1
+      chmod 0600 "${key}"
+      chmod 0644 "${cert}"
+    fi
+    warn "Let's Encrypt сертификат не найден, nginx использует self-signed сертификат."
+  fi
+
+  cat > "${site_path}" <<EOF
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${DOMAIN};
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name ${DOMAIN};
+
+    ssl_certificate ${cert};
+    ssl_certificate_key ${key};
+
+    root ${MASQ_DIR};
+    index index.html;
+
+    location / {
+        try_files \$uri \$uri/ =404;
+    }
+}
+EOF
+
+  rm -f /etc/nginx/sites-enabled/default
+  ln -sfn "${site_path}" "/etc/nginx/sites-enabled/hy2-site.conf"
+  nginx -t
+  systemctl enable nginx >/dev/null 2>&1 || true
+  systemctl restart nginx
 }
 
 backup_old_config() {
@@ -498,6 +554,7 @@ main() {
   write_hysteria_config
   install_renew_hook_if_possible
   configure_fail2ban
+  configure_nginx_https_stub
   configure_ufw
   start_service
   print_summary
