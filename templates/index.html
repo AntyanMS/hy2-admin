@@ -305,6 +305,38 @@
     }
     .secondary-btn { background: #374151; }
     .secondary-btn:hover { background: #4b5563; }
+    .backup-options-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 14px;
+      margin: 0 0 8px;
+    }
+    .backup-options-row label {
+      margin: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 600;
+    }
+    .backup-sep {
+      color: #93c5fd;
+      font-weight: 700;
+      user-select: none;
+    }
+    .emergency-stop-btn {
+      background: linear-gradient(180deg, #fde047, #facc15);
+      color: #111827;
+      border: 2px solid #7f1d1d;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.25), 0 6px 16px rgba(0, 0, 0, 0.25);
+    }
+    .emergency-stop-btn:hover {
+      background: linear-gradient(180deg, #facc15, #eab308);
+      color: #111827;
+    }
     .modal-backdrop {
       position: fixed;
       inset: 0;
@@ -546,6 +578,7 @@
     </div>
     <form id="active-delete-form" method="post" action="{{ url_for('hy2.users_delete_handler') }}">
       <input type="hidden" name="scope" value="active">
+      <button class="emergency-stop-btn inline" type="submit" formaction="{{ url_for('hy2.users_disable_all_handler') }}" formmethod="post" onclick="return confirm('Отключить ВСЕХ активных пользователей?');">⛔ Отключить всех</button>
       <button class="danger inline" type="submit" name="mode" value="selected">Удалить выбранных</button>
     </form>
   </div>
@@ -818,6 +851,24 @@
       <form method="post" action="{{ url_for('hy2.server_cascade_sync_now_handler') }}" style="margin:0 0 10px;">
         <button type="submit" class="secondary-btn">Синхронизация сейчас</button>
       </form>
+      <form method="post" action="{{ url_for('hy2.server_cascade_apply_singbox_handler') }}" style="margin:0 0 10px; display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end;">
+        <div>
+          <label class="muted" style="display:block; font-size:0.8rem; margin-bottom:4px;">Несколько exit → sing-box</label>
+          <select name="singbox_lb_mode" style="min-width:240px;">
+            <option value="urltest" {% if cascade_state.singbox_lb_mode == 'urltest' %}selected{% endif %}>По задержке (urltest)</option>
+            <option value="round_robin" {% if cascade_state.singbox_lb_mode == 'round_robin' %}selected{% endif %}>Равномерно по узлам (round-robin)</option>
+          </select>
+        </div>
+        <button type="submit" class="secondary-btn">Записать outbounds в sing-box</button>
+      </form>
+      <p class="muted" style="margin:0 0 12px; font-size:0.75rem; line-height:1.35;">
+        На шлюзе с sing-box: для выхода в интернет через каскад в разделе «Direct routing» укажите default outbound с тегом
+        <code>{{ cascade_state.exit_selector_tag }}</code>.
+        <strong>urltest</strong> периодически проверяет задержку до probe URL через каждый exit и предпочитает более быстрый узел (перегрузка канала обычно увеличивает RTT).
+        <strong>Round-robin</strong> распределяет без замера задержки.
+        Для каждого узла ниже задайте HY2 hop (тот же логин/пароль должны быть заведены на exit после синхронизации пользователей).
+        Опционально в <code>.env</code>: <code>CASCADE_URLTEST_PROBE_URL</code>, <code>CASCADE_URLTEST_INTERVAL</code>, <code>CASCADE_URLTEST_TOLERANCE</code>, <code>CASCADE_URLTEST_REQUIRE_SYNC_OK=1</code> (не использовать узлы с последним неуспешным sync).
+      </p>
       {% if cascade_state.servers %}
       <div style="overflow:auto;">
         <table style="width:100%; border-collapse:collapse; font-size:0.9rem;">
@@ -868,6 +919,45 @@
                     <button type="submit" class="danger-btn">Удалить</button>
                   </form>
                 </div>
+              </td>
+            </tr>
+            <tr>
+              <td colspan="5" style="padding:0 6px 10px 6px; border-bottom:1px solid #1f2937; background:#0b0f18;">
+                <details style="margin:4px 0 0;">
+                  <summary class="muted" style="cursor:pointer; font-size:0.85rem;">Hop Hysteria2 → этому exit</summary>
+                  <form method="post" action="{{ url_for('hy2.server_cascade_hop_handler') }}" style="margin-top:10px; display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:8px; align-items:end;">
+                    <input type="hidden" name="node_id" value="{{ r.node_id }}">
+                    <div>
+                      <label class="muted" style="font-size:0.75rem;">HY2 адрес (домен/IP)</label>
+                      <input name="hy2_server" value="{{ r.hy2_server }}" placeholder="публичный хост HY2" autocomplete="off">
+                    </div>
+                    <div>
+                      <label class="muted" style="font-size:0.75rem;">Порт</label>
+                      <input name="hy2_port" type="number" min="1" max="65535" value="{{ r.hy2_port }}" style="max-width:120px;">
+                    </div>
+                    <div>
+                      <label class="muted" style="font-size:0.75rem;">TLS SNI (если нужен)</label>
+                      <input name="hy2_sni" value="{{ r.hy2_sni }}" placeholder="часто = домен сертификата" autocomplete="off">
+                    </div>
+                    <div>
+                      <label class="muted" style="font-size:0.75rem;">Логин hop</label>
+                      <input name="hop_username" value="{{ r.hop_username }}" placeholder="если userpass" autocomplete="off">
+                    </div>
+                    <div>
+                      <label class="muted" style="font-size:0.75rem;">Пароль hop {% if r.hop_password_set %}<span class="muted">(задан)</span>{% endif %}</label>
+                      <input name="hop_password" type="password" value="" placeholder="{% if r.hop_password_set %}оставьте пустым — не менять{% else %}обязательно{% endif %}" autocomplete="new-password">
+                    </div>
+                    <div>
+                      <label class="muted" style="display:flex; align-items:center; gap:8px; font-size:0.75rem; margin-top:24px;">
+                        <input type="checkbox" name="hy2_insecure" value="1" {% if r.hy2_insecure %}checked{% endif %}>
+                        TLS insecure
+                      </label>
+                    </div>
+                    <div>
+                      <button type="submit" class="secondary-btn">Сохранить hop</button>
+                    </div>
+                  </form>
+                </details>
               </td>
             </tr>
             {% endfor %}
@@ -958,6 +1048,7 @@
         <div class="tabs security-inner-tabs" style="margin-bottom:12px; flex-wrap:wrap;">
           <button type="button" id="sec-sub-f2b-exc-btn" class="tab-btn active">Исключения fail2ban</button>
           <button type="button" id="sec-sub-f2b-bl-btn" class="tab-btn">Чёрный список fail2ban</button>
+          <button type="button" id="sec-sub-backup-btn" class="tab-btn">Резервное копирование</button>
           <button type="button" id="sec-sub-stub-btn" class="tab-btn">Заглушка</button>
         </div>
 
@@ -1012,6 +1103,34 @@
           {% else %}
           <p class="muted">Чёрный список fail2ban в этом режиме не редактируется из панели.</p>
           {% endif %}
+        </div>
+
+        <div id="sec-panel-backup" class="tab-panel security-nested-panel">
+          <p class="muted" style="margin:0 0 10px; font-size:0.9rem;">Выгрузка и загрузка данных сервера: пользователи, лимиты и настройки сервера.</p>
+          <form method="post" action="{{ url_for('hy2.server_backup_export_handler') }}" style="margin:0 0 12px;">
+            <label style="margin:0 0 6px;">Выгрузить с сервера</label>
+            <div class="backup-options-row">
+              <label><input type="checkbox" name="backup_include_users_limits" value="1" {% if defaults.backup_include_users_limits != '' %}checked{% endif %}> Пользователи и лимиты</label>
+              <span class="backup-sep">|</span>
+              <label><input type="checkbox" name="backup_include_server_settings" value="1" {% if defaults.backup_include_server_settings != '' %}checked{% endif %}> Настройки сервера</label>
+            </div>
+            <div class="actions"><button type="submit">Скачать</button></div>
+          </form>
+
+          <form method="post" action="{{ url_for('hy2.server_backup_import_handler') }}" enctype="multipart/form-data" onsubmit="return confirm('Применить данные из backup на текущем сервере?');">
+            <label style="margin:0 0 6px;">Загрузить на сервер</label>
+            <div class="server-grid">
+              <div>
+                <input type="file" name="backup_file" accept=".json,application/json" required>
+              </div>
+            </div>
+            <div class="backup-options-row" style="margin-top:8px;">
+              <label><input type="checkbox" name="restore_include_users_limits" value="1" {% if defaults.restore_include_users_limits != '' %}checked{% endif %}> Пользователи и лимиты</label>
+              <span class="backup-sep">|</span>
+              <label><input type="checkbox" name="restore_include_server_settings" value="1" {% if defaults.restore_include_server_settings != '' %}checked{% endif %}> Настройки сервера</label>
+            </div>
+            <div class="actions"><button type="submit" class="danger-btn">Загрузить</button></div>
+          </form>
         </div>
 
         <div id="sec-panel-stub" class="tab-panel security-nested-panel">
@@ -1450,26 +1569,32 @@
 
       const secSubExcBtn = document.getElementById("sec-sub-f2b-exc-btn");
       const secSubBlBtn = document.getElementById("sec-sub-f2b-bl-btn");
+      const secSubBackupBtn = document.getElementById("sec-sub-backup-btn");
       const secSubStubBtn = document.getElementById("sec-sub-stub-btn");
       const secPanelExc = document.getElementById("sec-panel-f2b-exc");
       const secPanelBl = document.getElementById("sec-panel-f2b-bl");
+      const secPanelBackup = document.getElementById("sec-panel-backup");
       const secPanelStub = document.getElementById("sec-panel-stub");
 
       function setSecuritySubTab(name) {
         const exc = name === "f2b-exc";
         const bl = name === "f2b-bl";
+        const backup = name === "backup";
         const stub = name === "stub";
         if (secPanelExc) secPanelExc.classList.toggle("active", exc);
         if (secPanelBl) secPanelBl.classList.toggle("active", bl);
+        if (secPanelBackup) secPanelBackup.classList.toggle("active", backup);
         if (secPanelStub) secPanelStub.classList.toggle("active", stub);
         if (secSubExcBtn) secSubExcBtn.classList.toggle("active", exc);
         if (secSubBlBtn) secSubBlBtn.classList.toggle("active", bl);
+        if (secSubBackupBtn) secSubBackupBtn.classList.toggle("active", backup);
         if (secSubStubBtn) secSubStubBtn.classList.toggle("active", stub);
       }
 
-      if (secSubExcBtn && secSubBlBtn && secSubStubBtn) {
+      if (secSubExcBtn && secSubBlBtn && secSubBackupBtn && secSubStubBtn) {
         secSubExcBtn.addEventListener("click", function () { setSecuritySubTab("f2b-exc"); });
         secSubBlBtn.addEventListener("click", function () { setSecuritySubTab("f2b-bl"); });
+        secSubBackupBtn.addEventListener("click", function () { setSecuritySubTab("backup"); });
         secSubStubBtn.addEventListener("click", function () { setSecuritySubTab("stub"); });
       }
 

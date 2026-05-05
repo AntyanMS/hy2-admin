@@ -72,6 +72,9 @@ USER_IP_STATE_PATH = Path("/opt/hy2-admin/data/user_ip_state.json")
 WHITELIST_STATE_PATH = Path("/opt/hy2-admin/data/russia-whitelist/state.json")
 WHITELIST_SYNC_SCRIPT = Path("/opt/hy2-admin/whitelist_sync.py")
 CASCADE_REMOTE_SERVERS_PATH = Path("/opt/hy2-admin/data/cascade/remote_servers.json")
+BACKUP_FORMAT = "hy2-admin-backup"
+BACKUP_FORMAT_VERSION = 1
+BACKUP_UPLOAD_MAX_BYTES = 4 * 1024 * 1024
 
 
 def _app_root() -> Path:
@@ -1364,6 +1367,241 @@ def _parse_cascade_registration_token(raw: str) -> dict:
     return payload
 
 
+def _cascade_exit_selector_tag() -> str:
+    t = (ENV.get("CASCADE_EXIT_SELECTOR_TAG") or "cascade-exit-auto").strip()
+    return t or "cascade-exit-auto"
+
+
+def _cascade_hy2_outbound_tag(node_id: str) -> str:
+    nid = re.sub(r"[^a-zA-Z0-9]", "", str(node_id or ""))[:16].lower()
+    if not nid:
+        nid = "node"
+    return f"cascade-hy2-{nid}"
+
+
+def _cascade_last_sync_map() -> dict[str, bool]:
+    out: dict[str, bool] = {}
+    for p in (
+        Path("/opt/hy2-admin/data/cascade/master_sync_state.json"),
+        Path("/opt/hy2-admin/data/cascade/last_sync_status.json"),
+    ):
+        if not p.exists():
+            continue
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        rows = d.get("rows")
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            node_id = str(row.get("node_id", ""))
+            if not node_id:
+                continue
+            out[node_id] = bool(row.get("ok", False))
+    return out
+
+
+def _get_singbox_lb_mode_from_db(db: dict) -> str:
+    m = str(db.get("singbox_lb_mode") or "urltest").strip().lower()
+    if m in ("round_robin", "rr", "balance", "roundrobin"):
+        return "round_robin"
+    return "urltest"
+
+
+def _get_cascade_hy2_host(item: dict) -> str:
+    return str(item.get("hy2_server") or item.get("host") or "").strip()
+
+
+def _cascade_exit_candidates_for_singbox(
+    db: dict, *, require_last_sync_ok: bool
+) -> list[dict]:
+    allowed: list[dict] = []
+    sync_ok = _cascade_last_sync_map() if require_last_sync_ok else {}
+    for item in db.get("servers") or []:
+        if not isinstance(item, dict):
+            continue
+        if not item.get("enabled", True):
+            continue
+        if str(item.get("role", "")).strip().lower() != "exit":
+            continue
+        if not item.get("cascade_exit", False):
+            continue
+        pwd = str(item.get("hop_password") or "").strip()
+        host = _get_cascade_hy2_host(item)
+        if not pwd or not host:
+            continue
+        nid = str(item.get("node_id", ""))
+        if require_last_sync_ok and nid in sync_ok and not sync_ok.get(nid, False):
+            continue
+        allowed.append(item)
+    return allowed
+
+
+def _build_one_cascade_hysteria2_outbound(item: dict) -> dict:
+    tag = _cascade_hy2_outbound_tag(item.get("node_id", ""))
+    host = _get_cascade_hy2_host(item)
+    try:
+        port = int(item.get("hy2_port", 443) or 443)
+    except (TypeError, ValueError):
+        port = 443
+    sni = str(item.get("hy2_sni") or "").strip()
+    if not sni:
+        try:
+            ipaddress.ip_address(host)
+            sni = ""
+        except ValueError:
+            sni = host
+    usr = str(item.get("hop_username") or "").strip()
+    pwd = str(item.get("hop_password") or "").strip()
+    insecure = bool(item.get("hy2_insecure", False))
+
+    tls_obj: dict = {"enabled": True, "insecure": insecure}
+    if sni:
+        tls_obj["server_name"] = sni
+
+    # sing-box hysteria2 outbound: для auth userpass задаётся одна строка "user:pass" в password
+    auth_secret = f"{usr}:{pwd}" if usr else pwd
+    return {
+        "type": "hysteria2",
+        "tag": tag,
+        "server": host,
+        "server_port": port,
+        "password": auth_secret,
+        "tls": tls_obj,
+    }
+
+
+def _strip_managed_cascade_outbounds(cfg: dict, selector_tag: str) -> None:
+    obs = cfg.get("outbounds")
+    if not isinstance(obs, list):
+        cfg["outbounds"] = []
+        return
+    kept: list = []
+    for ob in obs:
+        if not isinstance(ob, dict):
+            kept.append(ob)
+            continue
+        t = str(ob.get("tag", "")).strip()
+        if t == selector_tag or t.startswith("cascade-hy2-"):
+            continue
+        kept.append(ob)
+    cfg["outbounds"] = kept
+
+
+def _restart_sing_box_best_effort() -> tuple[bool, str]:
+    sing_active = subprocess.run(
+        ["systemctl", "is-active", "sing-box"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if sing_active.returncode != 0 or sing_active.stdout.strip() != "active":
+        return False, sing_active.stdout.strip() or "inactive"
+    r = subprocess.run(["systemctl", "restart", "sing-box"], capture_output=True, text=True, timeout=40)
+    if r.returncode != 0:
+        err = (r.stderr or r.stdout or "").strip() or f"код {r.returncode}"
+        return False, err
+    return True, "ok"
+
+
+def apply_cascade_singbox_outbounds(*, lb_mode: str | None = None) -> str:
+    """Записывает в sing-box hysteria2 per-node + групповой outbound (urltest или load_balance).
+    Возвращает текстовое сообщение для UI."""
+    selector_tag = _cascade_exit_selector_tag()
+    db = _load_cascade_db()
+    mode = str(lb_mode or _get_singbox_lb_mode_from_db(db)).strip().lower()
+    if mode in ("round_robin", "rr", "balance", "roundrobin"):
+        mode = "round_robin"
+    else:
+        mode = "urltest"
+
+    require_sync = (ENV.get("CASCADE_URLTEST_REQUIRE_SYNC_OK") or "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    candidates = _cascade_exit_candidates_for_singbox(db, require_last_sync_ok=require_sync)
+
+    p = Path(SING_BOX_CONFIG_PATH)
+    if not p.exists():
+        raise ValueError(f"Файл sing-box не найден: {SING_BOX_CONFIG_PATH}")
+    try:
+        cfg = json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        raise ValueError(f"Ошибка чтения sing-box JSON: {e}") from e
+    if not isinstance(cfg, dict):
+        raise ValueError("sing-box: корень JSON должен быть объектом")
+
+    _strip_managed_cascade_outbounds(cfg, selector_tag)
+    obs = cfg.setdefault("outbounds", [])
+    if not isinstance(obs, list):
+        cfg["outbounds"] = []
+        obs = cfg["outbounds"]
+
+    if not candidates:
+        p.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        ok, st = _restart_sing_box_best_effort()
+        extra = f", sing-box перезапущен ({st})" if ok else f", sing-box: {st}"
+        return (
+            "Каскадные outbounds удалены из sing-box (нет узлов с заполненным HY2 hop-паролем и адресом)."
+            + extra
+        )
+
+    tags: list[str] = []
+    seen: set[str] = set()
+    for item in candidates:
+        ob = _build_one_cascade_hysteria2_outbound(item)
+        t = str(ob.get("tag", "")).strip()
+        if not t or t in seen:
+            continue
+        seen.add(t)
+        tags.append(t)
+        obs.append(ob)
+
+    if not tags:
+        p.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return "Не удалось сформировать теги outbounds."
+
+    probe_url = (ENV.get("CASCADE_URLTEST_PROBE_URL") or "https://www.gstatic.com/generate_204").strip()
+    interval = (ENV.get("CASCADE_URLTEST_INTERVAL") or "3m").strip() or "3m"
+    tol_raw = (ENV.get("CASCADE_URLTEST_TOLERANCE") or "50").strip()
+    try:
+        tolerance = int(tol_raw)
+    except ValueError:
+        tolerance = 50
+
+    if mode == "round_robin":
+        composite: dict = {
+            "type": "load_balance",
+            "tag": selector_tag,
+            "outbounds": tags,
+            "strategy": "round_robin",
+        }
+    else:
+        composite = {
+            "type": "urltest",
+            "tag": selector_tag,
+            "outbounds": tags,
+            "url": probe_url,
+            "interval": interval,
+            "tolerance": tolerance,
+            "interrupt_exist_connections": False,
+        }
+    obs.append(composite)
+
+    p.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    ok, st = _restart_sing_box_best_effort()
+    mode_human = "urltest (мин. задержка к пробе)" if mode == "urltest" else "round-robin (по очереди)"
+    tail = f" sing-box перезапущен." if ok else f" sing-box: {st} (конфиг записан)."
+    return (
+        f"Каскад: записано {len(tags)} HY2 outbounds + группа «{selector_tag}» ({mode_human}).{tail}"
+    )
+
+
 def read_cascade_ui_state() -> dict:
     db = _load_cascade_db()
     servers_raw = db.get("servers") or []
@@ -1372,6 +1610,12 @@ def read_cascade_ui_state() -> dict:
         if not isinstance(item, dict):
             continue
         role = str(item.get("role", "")).strip().lower() or "exit"
+        hy2_port_raw = item.get("hy2_port", 443)
+        try:
+            hy2_port = int(hy2_port_raw)
+        except (TypeError, ValueError):
+            hy2_port = 443
+        hop_pwd = str(item.get("hop_password") or "").strip()
         servers.append(
             {
                 "node_id": str(item.get("node_id", "")),
@@ -1383,6 +1627,12 @@ def read_cascade_ui_state() -> dict:
                 "cascade_exit": bool(item.get("cascade_exit", False)),
                 "fingerprint": str(item.get("fingerprint", "")),
                 "issued_at": str(item.get("issued_at", "")),
+                "hy2_server": _get_cascade_hy2_host(item),
+                "hy2_port": hy2_port,
+                "hy2_sni": str(item.get("hy2_sni") or "").strip(),
+                "hop_username": str(item.get("hop_username") or "").strip(),
+                "hop_password_set": bool(hop_pwd),
+                "hy2_insecure": bool(item.get("hy2_insecure", False)),
             }
         )
 
@@ -1427,6 +1677,8 @@ def read_cascade_ui_state() -> dict:
         "servers": sorted(servers, key=lambda x: (x["name"] or x["host"] or x["node_id"]).lower()),
         "servers_count": len(servers),
         "exit_enabled_count": len(exit_enabled),
+        "singbox_lb_mode": _get_singbox_lb_mode_from_db(db),
+        "exit_selector_tag": _cascade_exit_selector_tag(),
     }
 
 
@@ -2657,6 +2909,31 @@ def toggle_user(username: str, action: str) -> str:
     return "Пользователь включен"
 
 
+def disable_all_active_users() -> str:
+    cfg = load_hy2_config()
+    up = cfg["auth"]["userpass"]
+    if not up:
+        return "Активных пользователей нет"
+
+    state = load_user_state()
+    disabled = state["disabled"]
+    now = datetime.now(timezone.utc).isoformat()
+    moved = 0
+    for username, password in list(up.items()):
+        disabled[username] = {
+            "password": password,
+            "disabled_at": now,
+            "reason": "bulk_disable_all",
+        }
+        moved += 1
+    up.clear()
+
+    write_config_with_backup_and_restart(cfg)
+    save_user_state(state)
+    cascade_sync_users_best_effort("bulk_disable_all_users")
+    return f"Отключены все активные пользователи: {moved}"
+
+
 def reset_user_password_random(username: str) -> str:
     if not valid_username(username):
         raise ValueError("Недопустимое имя пользователя")
@@ -2916,7 +3193,83 @@ def base_defaults() -> dict:
         "direct_geoip_ru": "",
         "direct_default_enabled": "",
         "direct_default_outbound_tag": "",
+        "backup_include_users_limits": "1",
+        "backup_include_server_settings": "1",
+        "restore_include_users_limits": "1",
+        "restore_include_server_settings": "1",
     }
+
+
+def _is_checked(value: str | None, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "on", "true", "yes"}
+
+
+def _sanitize_userpass(data: object) -> dict[str, str]:
+    if not isinstance(data, dict):
+        raise ValueError("Некорректный backup: users_limits.auth_userpass должен быть object")
+    out: dict[str, str] = {}
+    for k, v in data.items():
+        username = str(k or "").strip()
+        if not valid_username(username):
+            raise ValueError(f"Некорректный username в backup: {username!r}")
+        if not isinstance(v, str):
+            raise ValueError(f"Некорректный пароль для {username}: должен быть строкой")
+        if "\n" in v or "\r" in v:
+            raise ValueError(f"Пароль для {username} содержит перевод строки")
+        out[username] = v
+    return out
+
+
+def _sanitize_user_state(data: object) -> dict:
+    if not isinstance(data, dict):
+        raise ValueError("Некорректный backup: users_limits.user_state должен быть object")
+    disabled = data.get("disabled", {})
+    if not isinstance(disabled, dict):
+        raise ValueError("Некорректный backup: users_limits.user_state.disabled должен быть object")
+    out_disabled: dict[str, dict] = {}
+    for k, v in disabled.items():
+        username = str(k or "").strip()
+        if not valid_username(username):
+            continue
+        if isinstance(v, dict):
+            out_disabled[username] = v
+        else:
+            out_disabled[username] = {"disabled_at": "", "reason": str(v)}
+    return {"disabled": out_disabled}
+
+
+def _sanitize_user_meta(data: object) -> dict:
+    if not isinstance(data, dict):
+        raise ValueError("Некорректный backup: users_limits.user_meta должен быть object")
+    users = data.get("users", {})
+    if not isinstance(users, dict):
+        raise ValueError("Некорректный backup: users_limits.user_meta.users должен быть object")
+    out_users: dict[str, dict] = {}
+    for k, v in users.items():
+        username = str(k or "").strip()
+        if not valid_username(username):
+            continue
+        out_users[username] = v if isinstance(v, dict) else {}
+    return {"users": out_users}
+
+
+def _sanitize_user_notes(data: object) -> dict:
+    if not isinstance(data, dict):
+        raise ValueError("Некорректный backup: users_limits.user_notes должен быть object")
+    users = data.get("users", {})
+    if not isinstance(users, dict):
+        raise ValueError("Некорректный backup: users_limits.user_notes.users должен быть object")
+    out_users: dict[str, str] = {}
+    for k, v in users.items():
+        username = str(k or "").strip()
+        if not valid_username(username):
+            continue
+        note_text = normalize_note(str(v or ""))
+        if note_text:
+            out_users[username] = note_text
+    return {"users": out_users}
 
 
 def read_whitelist_sync_state() -> dict:
@@ -3261,6 +3614,19 @@ def users_toggle_handler():
         return render_index_page(error_message=str(e))
 
 
+@bp.route("/users/disable-all", methods=["POST"])
+@requires_auth
+def users_disable_all_handler():
+    blocked = reject_sing_box_mutations()
+    if blocked is not None:
+        return blocked
+    try:
+        msg = disable_all_active_users()
+        return render_index_page(ok_message=msg)
+    except Exception as e:
+        return render_index_page(error_message=str(e))
+
+
 @bp.route("/users/password/random", methods=["POST"])
 @requires_auth
 def users_password_random_handler():
@@ -3345,6 +3711,146 @@ def users_note_handler():
         return render_index_page(ok_message=f"Заметка сохранена: {username}")
     except Exception as e:
         return render_index_page(error_message=str(e))
+
+
+@bp.route("/server/backup/export", methods=["POST"])
+@requires_auth
+def server_backup_export_handler():
+    include_users_limits = _is_checked(request.form.get("backup_include_users_limits"), default=True)
+    include_server_settings = _is_checked(request.form.get("backup_include_server_settings"), default=True)
+    if not include_users_limits and not include_server_settings:
+        return render_index_page(
+            defaults={
+                "backup_include_users_limits": "",
+                "backup_include_server_settings": "",
+            },
+            error_message="Резервное копирование: выберите хотя бы одну секцию для выгрузки.",
+        )
+
+    try:
+        cfg = load_hy2_config()
+        payload: dict = {
+            "format": BACKUP_FORMAT,
+            "version": BACKUP_FORMAT_VERSION,
+            "created_at_utc": datetime.now(timezone.utc).isoformat(),
+            "server_host": SERVER_HOST or "",
+            "hy2_config_path": HY2_CONFIG,
+            "sections": {},
+        }
+        if include_users_limits:
+            payload["sections"]["users_limits"] = {
+                "auth_userpass": dict(cfg.get("auth", {}).get("userpass", {})),
+                "user_meta": load_user_meta(),
+                "user_state": load_user_state(),
+                "user_notes": load_user_notes(),
+            }
+        if include_server_settings:
+            cfg_no_auth = dict(cfg)
+            cfg_no_auth.pop("auth", None)
+            payload["sections"]["server_settings"] = {
+                "hy2_config": cfg_no_auth,
+                "server_exclusions_items": read_server_exclusions().get("items", []),
+                "cascade_remote_servers": _load_cascade_db(),
+                "panel_timezone": get_panel_timezone(),
+            }
+
+        body = json.dumps(payload, ensure_ascii=False, indent=2)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        filename = f"hy2-admin-backup-{ts}.json"
+        return Response(
+            body,
+            mimetype="application/json; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except Exception as e:
+        return render_index_page(error_message=f"Резервное копирование: {e}")
+
+
+@bp.route("/server/backup/import", methods=["POST"])
+@requires_auth
+def server_backup_import_handler():
+    blocked = reject_sing_box_mutations()
+    if blocked is not None:
+        return blocked
+
+    include_users_limits = _is_checked(request.form.get("restore_include_users_limits"), default=True)
+    include_server_settings = _is_checked(request.form.get("restore_include_server_settings"), default=True)
+    if not include_users_limits and not include_server_settings:
+        return render_index_page(
+            defaults={
+                "restore_include_users_limits": "",
+                "restore_include_server_settings": "",
+            },
+            error_message="Восстановление: выберите хотя бы одну секцию.",
+        )
+
+    uploaded = request.files.get("backup_file")
+    if uploaded is None or not uploaded.filename:
+        return render_index_page(error_message="Восстановление: выберите JSON-файл резервной копии.")
+    try:
+        raw = uploaded.read(BACKUP_UPLOAD_MAX_BYTES + 1)
+        if len(raw) > BACKUP_UPLOAD_MAX_BYTES:
+            raise ValueError(f"Файл слишком большой (максимум {BACKUP_UPLOAD_MAX_BYTES // (1024 * 1024)} MB)")
+        doc = json.loads(raw.decode("utf-8"))
+        if not isinstance(doc, dict):
+            raise ValueError("Корень JSON должен быть object")
+        if str(doc.get("format", "")).strip().lower() != BACKUP_FORMAT:
+            raise ValueError("Это не backup-файл hy2-admin")
+        sections = doc.get("sections")
+        if not isinstance(sections, dict):
+            raise ValueError("Некорректный backup: отсутствует sections")
+
+        cfg_new = load_hy2_config()
+        cfg_changed = False
+        applied_labels: list[str] = []
+        sync_needed = False
+
+        if include_users_limits:
+            sec = sections.get("users_limits")
+            if not isinstance(sec, dict):
+                raise ValueError("В backup отсутствует секция users_limits")
+            auth_userpass = _sanitize_userpass(sec.get("auth_userpass", {}))
+            cfg_new.setdefault("auth", {})
+            cfg_new["auth"]["type"] = "userpass"
+            cfg_new["auth"]["userpass"] = auth_userpass
+            save_user_meta(_sanitize_user_meta(sec.get("user_meta", {})))
+            save_user_state(_sanitize_user_state(sec.get("user_state", {})))
+            save_user_notes(_sanitize_user_notes(sec.get("user_notes", {})))
+            cfg_changed = True
+            sync_needed = True
+            applied_labels.append("пользователи и лимиты")
+
+        if include_server_settings:
+            sec = sections.get("server_settings")
+            if not isinstance(sec, dict):
+                raise ValueError("В backup отсутствует секция server_settings")
+            restored_cfg = sec.get("hy2_config", {})
+            if isinstance(restored_cfg, dict) and restored_cfg:
+                keep_auth = cfg_new.get("auth", {"type": "userpass", "userpass": {}})
+                cfg_new = dict(restored_cfg)
+                cfg_new["auth"] = keep_auth
+                cfg_changed = True
+            exclusions_items = sec.get("server_exclusions_items", [])
+            if isinstance(exclusions_items, list):
+                parsed = parse_exclusion_tokens("\n".join(str(x) for x in exclusions_items))
+                write_server_exclusions(parsed)
+            cascade_db = sec.get("cascade_remote_servers")
+            if isinstance(cascade_db, dict):
+                _save_cascade_db(cascade_db)
+            panel_tz = str(sec.get("panel_timezone", "")).strip()
+            if panel_tz in PANEL_TIMEZONE_OPTIONS:
+                update_env_keys({"PANEL_TIMEZONE": panel_tz})
+            applied_labels.append("настройки сервера")
+
+        if cfg_changed:
+            write_config_with_backup_and_restart(cfg_new)
+        if sync_needed:
+            cascade_sync_users_best_effort("restore_backup_ui")
+
+        msg = "Восстановление завершено: " + ", ".join(applied_labels)
+        return render_index_page(ok_message=msg)
+    except Exception as e:
+        return render_index_page(error_message=f"Восстановление backup: {e}")
 
 
 @bp.route("/server/bandwidth", methods=["POST"])
@@ -3461,6 +3967,15 @@ def server_cascade_register_handler():
         payload = _parse_cascade_registration_token(token_raw)
         if alias:
             payload["name"] = alias
+        payload.setdefault("hy2_server", str(payload.get("host") or "").strip())
+        try:
+            payload.setdefault("hy2_port", int(payload.get("hy2_port", 443) or 443))
+        except (TypeError, ValueError):
+            payload["hy2_port"] = 443
+        payload.setdefault("hy2_sni", "")
+        payload.setdefault("hop_username", "")
+        payload.setdefault("hop_password", "")
+        payload.setdefault("hy2_insecure", False)
         db = _load_cascade_db()
         servers = [s for s in (db.get("servers") or []) if isinstance(s, dict) and s.get("node_id") != payload["node_id"]]
         payload["enabled"] = True
@@ -3548,6 +4063,77 @@ def server_cascade_sync_now_handler():
         return render_index_page(error_message=f"Синхронизация каскада: {e}")
 
 
+@bp.route("/server/cascade/hop", methods=["POST"])
+@requires_auth
+def server_cascade_hop_handler():
+    node_id = (request.form.get("node_id") or "").strip()
+    hy2_server = (request.form.get("hy2_server") or "").strip()
+    hy2_sni = (request.form.get("hy2_sni") or "").strip()
+    hop_username = (request.form.get("hop_username") or "").strip()
+    hop_password = (request.form.get("hop_password") or "").strip()
+    hy2_insecure = (request.form.get("hy2_insecure") or "") in {"1", "on", "true", "yes"}
+    hy2_port_raw = (request.form.get("hy2_port") or "").strip()
+    try:
+        if not node_id:
+            raise ValueError("node_id не передан")
+        try:
+            hy2_port = int(hy2_port_raw) if hy2_port_raw else 443
+        except ValueError:
+            raise ValueError("Некорректный HY2 порт") from None
+        if hy2_port <= 0 or hy2_port > 65535:
+            raise ValueError("HY2 порт вне диапазона 1–65535")
+
+        db = _load_cascade_db()
+        servers = db.get("servers") or []
+        hit = None
+        for item in servers:
+            if isinstance(item, dict) and str(item.get("node_id")) == node_id:
+                hit = item
+                break
+        if not isinstance(hit, dict):
+            raise ValueError("Узел не найден")
+
+        if hy2_server:
+            hit["hy2_server"] = hy2_server
+        hop_host = _get_cascade_hy2_host(hit)
+        if not hop_host:
+            raise ValueError("Укажите адрес HY2 (хост или IP) для выхода на этот узел")
+
+        hit["hy2_port"] = hy2_port
+        hit["hy2_sni"] = hy2_sni
+        hit["hop_username"] = hop_username
+        if hop_password:
+            hit["hop_password"] = hop_password
+        elif not str(hit.get("hop_password") or "").strip():
+            raise ValueError("Укажите пароль hop (тот же учётка должна существовать на exit после синхронизации)")
+        hit["hy2_insecure"] = hy2_insecure
+
+        db["servers"] = servers
+        _save_cascade_db(db)
+        return render_index_page(ok_message=f"Hop для узла {hit.get('name') or node_id} сохранён. При необходимости нажмите «Записать outbounds в sing-box».")
+    except Exception as e:
+        return render_index_page(error_message=f"Каскад hop: {e}")
+
+
+@bp.route("/server/cascade/apply-singbox", methods=["POST"])
+@requires_auth
+def server_cascade_apply_singbox_handler():
+    mode_raw = (request.form.get("singbox_lb_mode") or "").strip().lower()
+    try:
+        db = _load_cascade_db()
+        if mode_raw in ("round_robin", "rr", "balance", "roundrobin"):
+            db["singbox_lb_mode"] = "round_robin"
+        elif mode_raw in ("urltest", "url_test", "latency", "lat"):
+            db["singbox_lb_mode"] = "urltest"
+        else:
+            db["singbox_lb_mode"] = _get_singbox_lb_mode_from_db(db)
+        _save_cascade_db(db)
+        msg = apply_cascade_singbox_outbounds(lb_mode=str(db.get("singbox_lb_mode") or "urltest"))
+        return render_index_page(ok_message=msg)
+    except Exception as e:
+        return render_index_page(error_message=f"Sing-box каскад: {e}")
+
+
 @bp.route("/server/direct-routing", methods=["POST"])
 @requires_auth
 def server_direct_routing_handler():
@@ -3557,6 +4143,7 @@ def server_direct_routing_handler():
     enable_default = (request.form.get("direct_default_enabled") or "") in {"1", "on", "true", "yes"}
     default_outbound_tag = (request.form.get("direct_default_outbound_tag") or "").strip()
     try:
+        default_note = ""
         explicit_hosts = _split_tokens(explicit_raw)
         ru_suffixes = _split_tokens(suffixes_raw)
         for h in explicit_hosts:
@@ -3569,7 +4156,18 @@ def server_direct_routing_handler():
         available_tags = [str(x) for x in state.get("outbound_tags", []) if isinstance(x, str)]
         if enable_default:
             if not default_outbound_tag:
-                raise ValueError("Выберите тег default outbound")
+                remembered_tag = str(state.get("default_outbound_tag") or "").strip()
+                if remembered_tag:
+                    default_outbound_tag = remembered_tag
+                    default_note = f" Использован текущий default outbound: {default_outbound_tag}."
+                elif available_tags:
+                    default_outbound_tag = available_tags[0]
+                    default_note = f" Автоматически выбран default outbound: {default_outbound_tag}."
+                else:
+                    # sing-box может быть отключен/не настроен на этом узле:
+                    # сохраняем остальные правила, но default outbound не включаем.
+                    enable_default = False
+                    default_note = " Default outbound отключен: не найдено доступных outbound-тегов."
             if available_tags and default_outbound_tag not in available_tags:
                 raise ValueError(f"Тег не найден в sing-box: {default_outbound_tag}")
         apply_direct_routing_rules(
@@ -3587,9 +4185,9 @@ def server_direct_routing_handler():
         )
         if sing_active.returncode == 0 and sing_active.stdout.strip() == "active":
             subprocess.run(["systemctl", "restart", "sing-box"], capture_output=True, text=True, timeout=40)
-            msg = "Direct routing правила сохранены, sing-box перезапущен"
+            msg = f"Direct routing правила сохранены, sing-box перезапущен{default_note}"
         else:
-            msg = "Direct routing правила сохранены"
+            msg = f"Direct routing правила сохранены{default_note}"
         return render_index_page(ok_message=msg)
     except Exception as e:
         return render_index_page(

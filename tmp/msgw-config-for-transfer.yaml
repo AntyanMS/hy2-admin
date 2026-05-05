@@ -1,0 +1,40 @@
+listen: :443
+tls:
+  cert: /etc/hysteria/fullchain.pem
+  key: /etc/hysteria/privkey.pem
+auth:
+  type: userpass
+  userpass:
+    Admin: 6f0028662baf65ee48930a100db43e14
+    SHAMAN-antyanmsa: d78f6d4629cb1eda2ebd5339f29c5cce
+    Lyda: 519abb60589d2a7a1524d13fa83c56a3
+    Grafskaya: 0dfc4e99aa52518ddc2c709e0ecebb85
+    Kris: 032153e281fc7792db86dade6c003bc4
+    Daniil_Beregovoy: f05ff42cc0bac5fb0c15143ed31af6a2
+    Spectator: 7ae22dfc2c5abec6f70a7bd27025abf0
+    Petrova: 44d0e4729dc8144265a354d63f0836f3
+    Dima_Novozhilov: b48babdfca179c15c91d5ab8305a90fa
+    Anastasia_Beregovaya: 74577c8b9084327468e50bdb6a041bcd
+    Yura: a9e75b6ec3019f122a3c1f07b87d8bd6
+    Margo: e43a9376c4bf405df6ede459749d2564
+    Gutov: 618170e0b2873181ef9d591f35de4d1f
+    Liana: fcf1420e01a31180abc51a57ffbaa2d6
+    Nik: 135b18ffc88602cfedd1ca1af12afda1
+    Lezin: 4acfd8de490e696c457d045b2259d79f
+    Bobr: 64684e76c5fa313f6d532bcb8ecf958c
+    Shadow: 0a75651da3b0a9b2ba056f6ed869956c
+    Valentin: 5198724d32770f2717176a24175aba33
+    Alex_sosed: 6be573e48d549250e72f2ad2decc37c3
+    Misha_239: 7fbdd772fb1989357c91de5ab28f2a4c
+    Nastya_239: e091f1bb837141fb529e3841e6b482b8
+    Kondr: aab0a9d271df551b36f1775996befec7
+    Diplomaty: 1f7069b2f6e54097ee42439361deb508
+    Katovaya_akula: 943437fd6413cfc8b175d7e1ff45cf56
+    Kris_T: eb8601abb3f5f69cbf59ff38d71fc248
+    Barsukova: f84d7a7f8807b11423a68c13e70fd47c
+trafficStats:
+  listen: 127.0.0.1:9999
+  secret: 686ca72e8eaf40ea73aea74db63638d3
+bandwidth:
+  up: 175 mbps
+  down: 175 mbps

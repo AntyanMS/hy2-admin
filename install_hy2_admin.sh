@@ -13,8 +13,12 @@ INSTALL_DIR="/opt/hy2-admin"
 SERVICE_NAME="hy2-admin.service"
 NGINX_SITE_NAME="hy2-admin-panel"
 NGINX_SITE_PATH="/etc/nginx/sites-available/${NGINX_SITE_NAME}"
+HTTPS_STUB_DIR="/var/www/hy2-site"
+HTTPS_STUB_PATH="${HTTPS_STUB_DIR}/index.html"
 BINARY_PATH="${INSTALL_DIR}/hy2-admin-panel"
 PANEL_BINARY_URL="${HY2_PANEL_URL:-https://github.com/AntyanMS/hy2-admin/releases/latest/download/hy2-admin-panel-linux-amd64}"
+WHITELIST_SYNC_URL="${WHITELIST_SYNC_URL:-https://raw.githubusercontent.com/AntyanMS/hy2-admin/main/whitelist_sync.py}"
+WHITELIST_SYNC_FALLBACK_URL="${WHITELIST_SYNC_FALLBACK_URL:-https://raw.githubusercontent.com/AntyanMS/hy2-admin/dev/whitelist_sync.py}"
 PANEL_SESSION_SECRET=""
 SERVER_HOST=""
 USE_LETS_ENCRYPT="n"
@@ -167,6 +171,32 @@ download_binary() {
   chmod 0755 "${BINARY_PATH}"
 }
 
+install_whitelist_sync_script() {
+  log "Установка whitelist_sync.py..."
+  if ! curl -fL --retry 10 --retry-all-errors --connect-timeout 15 --max-time 120 \
+    "${WHITELIST_SYNC_URL}" -o "${INSTALL_DIR}/whitelist_sync.py"; then
+    log "Основной URL whitelist_sync.py недоступен, пробую fallback..."
+    curl -fL --retry 10 --retry-all-errors --connect-timeout 15 --max-time 120 \
+      "${WHITELIST_SYNC_FALLBACK_URL}" -o "${INSTALL_DIR}/whitelist_sync.py"
+  fi
+  chmod 0755 "${INSTALL_DIR}/whitelist_sync.py"
+}
+
+cleanup_legacy_sources() {
+  local stamp legacy_dir
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  legacy_dir="${INSTALL_DIR}/legacy-src-${stamp}"
+  mkdir -p "${legacy_dir}"
+
+  # Удаляем/архивируем старую source-установку, чтобы бинарь не подхватывал
+  # случайно устаревшие app.py/templates от предыдущих инсталлов.
+  for p in app.py templates launcher.py requirements.txt requirements-build.txt tools tmp tls __pycache__ .venv; do
+    if [[ -e "${INSTALL_DIR}/${p}" ]]; then
+      mv "${INSTALL_DIR}/${p}" "${legacy_dir}/"
+    fi
+  done
+}
+
 write_env() {
   cat > "${INSTALL_DIR}/.env" <<EOF
 SERVER_HOST=${SERVER_HOST}
@@ -182,6 +212,7 @@ PANEL_URL_PREFIX=${PANEL_URL_PREFIX}
 PANEL_SESSION_SECRET=${PANEL_SESSION_SECRET}
 PANEL_SESSION_COOKIE_SECURE=1
 PANEL_NGINX_SITE_PATH=${NGINX_SITE_PATH}
+HTTPS_ROOT_STUB_HTML_PATH=${HTTPS_STUB_PATH}
 SING_BOX_CONFIG_PATH=/etc/sing-box/config.json
 EOF
   chmod 0600 "${INSTALL_DIR}/.env"
@@ -223,6 +254,29 @@ make_self_signed_cert() {
   printf "%s|%s" "${cert_dir}/panel.crt" "${cert_dir}/panel.key"
 }
 
+prepare_https_root_stub() {
+  install -d -m 0755 "${HTTPS_STUB_DIR}"
+  cat > "${HTTPS_STUB_PATH}" <<'EOF'
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Service</title>
+  <style>
+    html, body { height: 100%; margin: 0; font-family: system-ui, sans-serif; }
+    body { display: grid; place-items: center; background: #0b1020; color: #d8e1f0; }
+    .card { border: 1px solid #2a3652; border-radius: 14px; padding: 22px 26px; background: #111a31; }
+  </style>
+</head>
+<body>
+  <div class="card">Service is running.</div>
+</body>
+</html>
+EOF
+  chmod 0644 "${HTTPS_STUB_PATH}"
+}
+
 write_nginx_site() {
   local cert_path="$1"
   local key_path="$2"
@@ -257,8 +311,9 @@ server {
   }
 
   location / {
-    default_type text/plain;
-    return 200 'ok';
+    root ${HTTPS_STUB_DIR};
+    index index.html;
+    try_files \$uri \$uri/ /index.html;
   }
 }
 EOF
@@ -278,7 +333,11 @@ server {
   listen 80;
   listen [::]:80;
   server_name ${SERVER_HOST};
-  location / { return 200 "ok"; }
+  location / {
+    root ${HTTPS_STUB_DIR};
+    index index.html;
+    try_files \$uri \$uri/ /index.html;
+  }
 }
 EOF
     ln -sfn "${NGINX_SITE_PATH}" "/etc/nginx/sites-enabled/${NGINX_SITE_NAME}"
@@ -332,54 +391,40 @@ import re
 cfg = Path("/etc/hysteria/config.yaml")
 text = cfg.read_text(encoding="utf-8")
 
-# If already in tls mode, just normalize paths.
+new_tls_block = "tls:\n  cert: /etc/hysteria/fullchain.pem\n  key: /etc/hysteria/privkey.pem\n"
+
+# 1) If tls block exists, replace only it.
 if re.search(r"(?m)^tls:\s*$", text):
     text = re.sub(
-        r"(?ms)^tls:\s*\n(?:[ \t]+.*\n)*",
-        "tls:\n  cert: /etc/hysteria/fullchain.pem\n  key: /etc/hysteria/privkey.pem\n",
+        r"(?m)^tls:\s*\n(?:[ \t][^\n]*\n)*",
+        new_tls_block + "\n",
         text,
         count=1,
     )
     cfg.write_text(text, encoding="utf-8")
     raise SystemExit(0)
 
-listen_match = re.search(r"(?m)^listen:\s*(.+)\s*$", text)
-listen_value = listen_match.group(1).strip() if listen_match else ":443"
+# 2) If acme block exists, replace acme with tls (preserve all other sections).
+if re.search(r"(?m)^acme:\s*$", text):
+    text = re.sub(
+        r"(?m)^acme:\s*\n(?:[ \t][^\n]*\n)*",
+        new_tls_block + "\n",
+        text,
+        count=1,
+    )
+    cfg.write_text(text, encoding="utf-8")
+    raise SystemExit(0)
 
-users = []
-in_auth = False
-in_userpass = False
-for line in text.splitlines():
-    if re.match(r"^auth:\s*$", line):
-        in_auth = True
-        in_userpass = False
-        continue
-    if in_auth and re.match(r"^\S", line):
-        in_auth = False
-        in_userpass = False
-    if not in_auth:
-        continue
-    if re.match(r"^\s{2}userpass:\s*$", line):
-        in_userpass = True
-        continue
-    if in_userpass:
-        m = re.match(r"^\s{4}([^:#\s][^:]*):\s*(.+?)\s*$", line)
-        if m:
-            users.append((m.group(1).strip(), m.group(2).strip()))
-            continue
-        if line.strip() == "":
-            continue
-        if re.match(r"^\s{2}\S", line):
-            in_userpass = False
-
-if not users:
-    users = [("user1", "change_me")]
-
-out = [f"listen: {listen_value}", "", "tls:", "  cert: /etc/hysteria/fullchain.pem", "  key: /etc/hysteria/privkey.pem", "", "auth:", "  type: userpass", "  userpass:"]
-for u, p in users:
-    out.append(f"    {u}: {p}")
-out.append("")
-cfg.write_text("\n".join(out), encoding="utf-8")
+# 3) Otherwise append tls block after listen line if possible, else append to end.
+listen_match = re.search(r"(?m)^listen:\s*.*\n?", text)
+if listen_match:
+    insert_at = listen_match.end()
+    text = text[:insert_at] + "\n" + new_tls_block + "\n" + text[insert_at:]
+else:
+    if not text.endswith("\n"):
+        text += "\n"
+    text += "\n" + new_tls_block
+cfg.write_text(text, encoding="utf-8")
 PY
 
   if systemctl list-unit-files | grep -q '^hysteria-server\.service'; then
@@ -471,7 +516,10 @@ main() {
   prepare_values
 
   install_packages
+  cleanup_legacy_sources
   download_binary
+  install_whitelist_sync_script
+  prepare_https_root_stub
   write_env
   write_systemd_unit
   setup_tls_and_nginx

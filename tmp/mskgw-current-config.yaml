@@ -1,0 +1,40 @@
+listen: :443
+tls:
+  cert: /etc/hysteria/fullchain.pem
+  key: /etc/hysteria/privkey.pem
+auth:
+  type: userpass
+  userpass:
+    '12345': bc455e34560ea9b353bff54203e80f65
+    Admin: 2347bf8c3a618cc3a4b95bc8fc0dca01
+    Aklimantovich: 37b64770bcf7579408c7310fe19f62a9
+    Artem: e321a65a6b9dfb819cd80a76f2052e54
+    Ashinomontaz: 8da96da6fbfa84ad41e3bfbac01318cd
+    Gavr: fa942ca061cea18c5e8a5d661ca2c91c
+    KlimKorolenko: 47d353d8d09890b25becd9f7a85659b0
+    KuzminP: 8fc77b1c04523e6712e25414e5dd4356
+    Marat: 4555242463075d9f0f9932f434b1f7aa
+    NataliaLEV: ec77cfd3515bd1db92427538e09b01e0
+    Nezabudka_1904: db1e7610ef608b276b3fb048e77c84c2
+    Olga: 0b081c884a58af66c432c59f5af8c78e
+    Paullo_111: 52071c48a4472461a086972389063faf
+    Sveta: 1de589a179ef4124e0eae6dd305716e3
+    Vova: dc5ea61e7fbb4507a82c64e2219f1ed4
+    Yuarik_mama: 7227de4971fe30b42b89c502647b8736
+    Yuarikx: 51eb77e4ba980b531533d19dbdf43dd9
+    Zelenyj_slonik: d5172932d5d5c819642e7832ce05b37e
+    amunkin: 4de3e617790f88751890b91868bb056c
+    antyanmsa: ce0642568c8358d7f3489206a66e0e13
+    dariyamsd: 971b138ebbb9d9cc67c71e184503dca5
+    dntz: 1125a7d145a474c9a92661b9829c901e
+    ekuraeva: 381b3e8c8a20b26f98f3f198b142e264
+    glhf007: 1afdc267912f8bbbcfec8d529694b8b2
+    izabellatte: 797de387aaf3e2b3792a25b46e639384
+    klimantovich: 6df26cbbc5528235d7099ea19db96611
+    mama: 9d3e73f704237c4fee801791707f1606
+    mskgw_mooo_com: e620e7acc161b5a606acfb6ff896103b
+
+
+trafficStats:
+  listen: 127.0.0.1:9999
+  secret: 8b9bd9e1144206cd4a0923d447449c28
