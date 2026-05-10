@@ -17,12 +17,7 @@ git clone https://github.com/AntyanMS/hy2-admin.git
 cd hy2-admin
 ```
 
-Другая ветка вашего форка (если нужна):
-
-```bash
-git checkout <имя-ветки>
-git pull
-```
+После клонирования: `cd hy2-admin`; при обновлении: `git pull`.
 
 ### Вариант B — архив ZIP
 
@@ -232,18 +227,16 @@ sudo ./install_hy2_admin.sh --auto
 
 Скрипт `install.sh` подтягивает с GitHub **`install_hy2_admin.sh`** и передаёт ему аргументы.
 
-По умолчанию подтягивается ветка **`main`**:
-
 ```bash
 curl -4fsSL --connect-timeout 25 --max-time 300 \
-  https://raw.githubusercontent.com/AntyanMS/hy2-admin/main/install.sh | sudo bash -s -- --auto \
+  https://raw.githubusercontent.com/AntyanMS/hy2-admin/HEAD/install.sh | sudo bash -s -- --auto \
   --domain example.com \
   --email admin@example.com
 ```
 
-Другой репозиторий/ветка: переменные `HY2_INSTALL_REF`, `HY2_INSTALL_SCRIPT_URL` (см. `install.sh`).
+Свой форк: задайте `HY2_INSTALL_SCRIPT_URL` (см. `install.sh`).
 
-*(При форке замените организацию/репозиторий в URL.)*
+*(При форке замените организацию и имя репозитория в URL.)*
 
 ---
 

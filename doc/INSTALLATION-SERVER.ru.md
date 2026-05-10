@@ -15,12 +15,7 @@ git clone https://github.com/AntyanMS/hy2-admin.git
 cd hy2-admin
 ```
 
-При необходимости другой ветки вашего форка:
-
-```bash
-git checkout <имя-ветки>
-git pull
-```
+После клонирования вы оказываетесь в каталоге проекта; при обновлении копии: `git pull`.
 
 ### Вариант B — архив без Git
 
@@ -189,18 +184,18 @@ sudo ./install_hysteria2.sh --auto \
 
 В репозитории есть `install_server.sh`: он подтягивает **ту же** `install_hysteria2.sh` с GitHub и передаёт ей аргументы.
 
-По умолчанию скрипты подтягиваются с ветки **`main`**:
+Онлайн-запуск: скрипт скачивается по прямой ссылке на файл в репозитории (`HEAD` указывает на актуальное состояние репозитория по умолчанию):
 
 ```bash
 curl -4fsSL --connect-timeout 25 --max-time 300 \
-  https://raw.githubusercontent.com/AntyanMS/hy2-admin/main/install_server.sh | sudo bash -s -- --auto \
+  https://raw.githubusercontent.com/AntyanMS/hy2-admin/HEAD/install_server.sh | sudo bash -s -- --auto \
   --domain example.com \
   --email admin@example.com
 ```
 
-Свой форк: задайте `HY2_INSTALL_REF` и при необходимости `HY2_SERVER_INSTALL_SCRIPT_URL` (см. комментарии в `install_server.sh`).
+Свой форк: задайте `HY2_SERVER_INSTALL_SCRIPT_URL` (см. комментарии в `install_server.sh`).
 
-*(Проверьте актуальность URL репозитория и ветки.)*
+*(Проверьте актуальность URL репозитория.)*
 
 ---
 

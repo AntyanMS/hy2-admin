@@ -107,21 +107,21 @@ sudo SINGBOX_LB_MODE=urltest ./install_singbox_gateway.sh --service-user example
 
 ## 7. Запуск без клонирования (raw-скрипт с GitHub)
 
-Если репозиторий не клонировали, можно передать скрипт в `bash` по URL (ветка **`main`**; при форке замените путь):
+Если репозиторий не клонировали, скрипт можно передать в `bash` по прямой ссылке (`HEAD` — актуальное состояние репозитория по умолчанию):
 
 ```bash
 curl -4fsSL --connect-timeout 25 --max-time 300 \
-  https://raw.githubusercontent.com/AntyanMS/hy2-admin/main/install_singbox_gateway.sh | sudo bash -s --
+  https://raw.githubusercontent.com/AntyanMS/hy2-admin/HEAD/install_singbox_gateway.sh | sudo bash -s --
 ```
 
 С явным пользователем:
 
 ```bash
 curl -4fsSL --connect-timeout 25 --max-time 300 \
-  https://raw.githubusercontent.com/AntyanMS/hy2-admin/main/install_singbox_gateway.sh | sudo bash -s -- --service-user example_hop_user
+  https://raw.githubusercontent.com/AntyanMS/hy2-admin/HEAD/install_singbox_gateway.sh | sudo bash -s -- --service-user example_hop_user
 ```
 
-*(При форке замените `AntyanMS/hy2-admin` и при необходимости ветку.)*
+*(При форке замените `AntyanMS/hy2-admin` в URL.)*
 
 ---
 
