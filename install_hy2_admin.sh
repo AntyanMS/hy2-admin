@@ -18,8 +18,16 @@ NGINX_SITE_PATH="/etc/nginx/sites-available/${NGINX_SITE_NAME}"
 HTTPS_STUB_DIR="/var/www/hy2-site"
 HTTPS_STUB_PATH="${HTTPS_STUB_DIR}/index.html"
 BINARY_PATH="${INSTALL_DIR}/hy2-admin-panel"
-PANEL_RELEASE_TAG="${HY2_PANEL_RELEASE_TAG:-v0.0.3}"
-PANEL_BINARY_URL="${HY2_PANEL_URL:-https://github.com/AntyanMS/hy2-admin/releases/download/${PANEL_RELEASE_TAG}/hy2-admin-panel}"
+# По умолчанию — GitHub «Latest» (см. https://github.com/AntyanMS/hy2-admin/releases/latest).
+# Явный URL: HY2_PANEL_URL. Зафиксировать версию по тегу: HY2_PANEL_RELEASE_TAG (например v1.2.3).
+PANEL_LATEST_BINARY_URL="https://github.com/AntyanMS/hy2-admin/releases/latest/download/hy2-admin-panel"
+if [[ -n "${HY2_PANEL_URL:-}" ]]; then
+  PANEL_BINARY_URL="${HY2_PANEL_URL}"
+elif [[ -n "${HY2_PANEL_RELEASE_TAG:-}" ]]; then
+  PANEL_BINARY_URL="https://github.com/AntyanMS/hy2-admin/releases/download/${HY2_PANEL_RELEASE_TAG}/hy2-admin-panel"
+else
+  PANEL_BINARY_URL="${PANEL_LATEST_BINARY_URL}"
+fi
 PANEL_SESSION_SECRET=""
 SERVER_HOST=""
 USE_LETS_ENCRYPT="n"
@@ -50,7 +58,7 @@ HY2_ADMIN_PANEL_USER          → при наличии включает руч�
 HY2_ADMIN_PANEL_PASS          → пароль панели
 HY2_ADMIN_RANDOM_CREDS=y|n    → как --random-creds / без manual (по умолчанию y)
 HY2_ADMIN_PANEL_URL_PREFIX    → например /secret/panel (слэши можно опустить)
-HY2_ADMIN_BINARY_URL          → URL бинаря панели (иначе HY2_PANEL_URL или релиз по тегу)
+HY2_ADMIN_BINARY_URL          → URL бинаря панели (иначе HY2_PANEL_URL, иначе HY2_PANEL_RELEASE_TAG, иначе Latest на GitHub)
 HY2_ADMIN_CREATE_CASCADE_HOP=y→ как --create-cascade-hop
 HY2_ADMIN_INSTALL_ENV=/path   → явный путь к env-файлу вместо стандартных путей выше
 

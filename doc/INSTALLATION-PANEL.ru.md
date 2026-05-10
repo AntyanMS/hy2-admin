@@ -17,10 +17,10 @@ git clone https://github.com/AntyanMS/hy2-admin.git
 cd hy2-admin
 ```
 
-Ветка для тестов, например `dev`:
+Другая ветка вашего форка (если нужна):
 
 ```bash
-git checkout dev
+git checkout <имя-ветки>
 git pull
 ```
 
@@ -63,7 +63,7 @@ sudo ./install_hy2_admin.sh ...
 ## 3. Что делает `install_hy2_admin.sh`
 
 - Ставит зависимости (`nginx`, `certbot` при домене, `fail2ban`, `ufw` и т.д.).
-- Скачивает **бинарь** панели (по умолчанию с GitHub Releases, тег задаётся переменной `HY2_PANEL_RELEASE_TAG`, по умолчанию в скрипте — например `v0.0.3`).
+- Скачивает **бинарь** панели с GitHub: по умолчанию URL **[Latest release](https://github.com/AntyanMS/hy2-admin/releases/latest)** (`…/releases/latest/download/hy2-admin-panel`). Зафиксировать конкретный релиз можно переменной `HY2_PANEL_RELEASE_TAG` или полным `HY2_PANEL_URL`.
 - Пишет `/opt/hy2-admin/.env`, unit `hy2-admin.service`, конфиг сайта nginx.
 - При указании домена и почты настраивает **Let's Encrypt** и HTTPS для панели.
 - Опционально синхронизирует материалы сертификата в конфиг Hysteria (если он есть на машине).
@@ -114,10 +114,11 @@ sudo ./install_hy2_admin.sh ...
 | `HY2_ADMIN_INSTALL_ENV` | явный путь к env-файлу |
 | `HY2_ADMIN_INTERNAL_PORT` | порт биндинга панели (по умолчанию `18080`) |
 
-Дополнительно для выбора релиза бинаря:
+Дополнительно для выбора бинаря панели:
 
-- `HY2_PANEL_RELEASE_TAG` — тег на GitHub Releases (например `v0.0.3`);
-- `HY2_PANEL_URL` — полный URL бинаря (если задан, имеет приоритет в логике скрипта над шаблоном по тегу).
+- `HY2_PANEL_URL` — полный URL файла (высший приоритет);
+- `HY2_PANEL_RELEASE_TAG` — опционально: скачать с `…/releases/download/<тег>/hy2-admin-panel` вместо Latest;
+- если ни того ни другого — используется **Latest** на GitHub.
 
 ---
 
@@ -193,10 +194,10 @@ sudo ./install_hy2_admin.sh --auto \
   --binary-url https://github.com/example-org/example-repo/releases/download/v0.0.0/hy2-admin-panel
 ```
 
-### «Максимально упакованный» пример (домен, почта, ручные учётные данные, префикс, hop, свой тег релиза)
+### «Максимально упакованный» пример (домен, почта, ручные учётные данные, префикс, hop, фиксированный тег релиза)
 
 ```bash
-sudo HY2_PANEL_RELEASE_TAG=v0.0.3 ./install_hy2_admin.sh --auto \
+sudo HY2_PANEL_RELEASE_TAG=v0.0.0 ./install_hy2_admin.sh --auto \
   --domain example.com \
   --email admin@example.com \
   --manual-creds \
@@ -205,6 +206,8 @@ sudo HY2_PANEL_RELEASE_TAG=v0.0.3 ./install_hy2_admin.sh --auto \
   --panel-url-prefix /mysecret/panel \
   --create-cascade-hop
 ```
+
+(`v0.0.0` — условный тег; обычно достаточно не задавать `HY2_PANEL_RELEASE_TAG` и брать **Latest**.)
 
 ### Тот же сценарий через файл `install.env`
 
@@ -229,16 +232,18 @@ sudo ./install_hy2_admin.sh --auto
 
 Скрипт `install.sh` подтягивает с GitHub **`install_hy2_admin.sh`** и передаёт ему аргументы.
 
-Ветка по умолчанию — `main`; для `dev`:
+По умолчанию подтягивается ветка **`main`**:
 
 ```bash
-HY2_INSTALL_REF=dev curl -4fsSL --connect-timeout 25 --max-time 300 \
-  https://raw.githubusercontent.com/AntyanMS/hy2-admin/dev/install.sh | sudo env HY2_INSTALL_REF=dev bash -s -- --auto \
+curl -4fsSL --connect-timeout 25 --max-time 300 \
+  https://raw.githubusercontent.com/AntyanMS/hy2-admin/main/install.sh | sudo bash -s -- --auto \
   --domain example.com \
   --email admin@example.com
 ```
 
-*(При форке замените организацию/репозиторий или задайте `HY2_INSTALL_SCRIPT_URL` внутри `install.sh`.)*
+Другой репозиторий/ветка: переменные `HY2_INSTALL_REF`, `HY2_INSTALL_SCRIPT_URL` (см. `install.sh`).
+
+*(При форке замените организацию/репозиторий в URL.)*
 
 ---
 

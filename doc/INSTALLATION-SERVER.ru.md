@@ -15,10 +15,10 @@ git clone https://github.com/AntyanMS/hy2-admin.git
 cd hy2-admin
 ```
 
-Переключение на ветку (например, `dev`):
+При необходимости другой ветки вашего форка:
 
 ```bash
-git checkout dev
+git checkout <имя-ветки>
 git pull
 ```
 
@@ -189,7 +189,7 @@ sudo ./install_hysteria2.sh --auto \
 
 В репозитории есть `install_server.sh`: он подтягивает **ту же** `install_hysteria2.sh` с GitHub и передаёт ей аргументы.
 
-Стабильная ветка по умолчанию — `main`; для тестов можно указать `dev`:
+По умолчанию скрипты подтягиваются с ветки **`main`**:
 
 ```bash
 curl -4fsSL --connect-timeout 25 --max-time 300 \
@@ -198,16 +198,9 @@ curl -4fsSL --connect-timeout 25 --max-time 300 \
   --email admin@example.com
 ```
 
-С веткой `dev`:
+Свой форк: задайте `HY2_INSTALL_REF` и при необходимости `HY2_SERVER_INSTALL_SCRIPT_URL` (см. комментарии в `install_server.sh`).
 
-```bash
-HY2_INSTALL_REF=dev curl -4fsSL --connect-timeout 25 --max-time 300 \
-  https://raw.githubusercontent.com/AntyanMS/hy2-admin/dev/install_server.sh | sudo env HY2_INSTALL_REF=dev bash -s -- --auto \
-  --domain example.com \
-  --email admin@example.com
-```
-
-*(Проверьте актуальность URL ветки и репозитория в вашем форке.)*
+*(Проверьте актуальность URL репозитория и ветки.)*
 
 ---
 

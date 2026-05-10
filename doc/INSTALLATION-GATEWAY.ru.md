@@ -107,7 +107,7 @@ sudo SINGBOX_LB_MODE=urltest ./install_singbox_gateway.sh --service-user example
 
 ## 7. Запуск без клонирования (raw-скрипт с GitHub)
 
-Если репозиторий не клонировали, можно передать скрипт в `bash` по URL (ветка `main`; для тестов замените на `dev`):
+Если репозиторий не клонировали, можно передать скрипт в `bash` по URL (ветка **`main`**; при форке замените путь):
 
 ```bash
 curl -4fsSL --connect-timeout 25 --max-time 300 \
