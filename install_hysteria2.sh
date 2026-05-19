@@ -17,7 +17,8 @@ INSTALL_TMP_DIR="${INSTALL_TMP_DIR:-/var/tmp/hy2-installer}"
 SERVICE_NAME="hysteria-server.service"
 CONFIG_PATH="/etc/hysteria/config.yaml"
 MASQ_DIR="/var/www/hy2-site"
-CASCADE_META="/etc/hysteria/cascade_node.json"
+CASCADE_API_PORT="${CASCADE_API_PORT:-9443}"
+CASCADE_DATA_DIR="/opt/hy2-admin/data/cascade"
 SERVER_IP=""
 FINAL_TLS_MODE=""
 FINAL_TLS_CERT=""
@@ -43,7 +44,7 @@ Flags:
   --hy2-user <user>        First HY2 user (default: user1)
   --hy2-pass <pass>        First HY2 password (default: random)
   --ssh-port <port>        SSH port for UFW (default: 22)
-  --cascade-node           Mark node as cascade/exit and print fingerprint
+  --cascade-node           Mark node as cascade/exit and print REGISTRATION_TOKEN for master panel
   --tls-mode <mode>        auto | acme | certbot (default: auto). В режиме certbot при отсутствии PEM сертификат Let's Encrypt выпускается автоматически (nginx + certbot webroot), нужен --email.
   --tls-cert <path>        Explicit cert path for tls-mode=certbot
   --tls-key <path>         Explicit key path for tls-mode=certbot
@@ -148,7 +149,7 @@ install_packages() {
   log "Обновление пакетов..."
   apt-get update -y
   DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
-  DEBIAN_FRONTEND=noninteractive apt-get install -y curl openssl ufw fail2ban nginx
+  DEBIAN_FRONTEND=noninteractive apt-get install -y curl openssl ufw fail2ban nginx python3
 }
 
 detect_hysteria_asset() {
@@ -531,21 +532,73 @@ EOF
   systemctl restart "${SERVICE_NAME}"
 }
 
-write_cascade_fingerprint() {
-  local fp token
-  fp="$(printf '%s' "${DOMAIN}|${SERVER_IP}|${HY2_USER}" | sha256sum | awk '{print $1}')"
-  token="$(openssl rand -hex 24)"
-  cat > "${CASCADE_META}" <<EOF
-{
-  "role": "cascade_exit",
-  "fingerprint": "${fp}",
-  "registration_token": "${token}",
-  "host": "${DOMAIN}",
-  "port": 443
+# Токен для master-панели: base64url(JSON), как tools/cascade/register_remote_node.py
+generate_cascade_registration_token() {
+  command -v python3 >/dev/null 2>&1 || die "Для каскадного узла нужен python3."
+  CASCADE_HOST="${DOMAIN}" CASCADE_NAME="${DOMAIN}" CASCADE_API_PORT="${CASCADE_API_PORT}" \
+    CASCADE_DATA_DIR="${CASCADE_DATA_DIR}" \
+    python3 <<'PY'
+import base64
+import hashlib
+import json
+import os
+import secrets
+import time
+import uuid
+from pathlib import Path
+
+def sha256_hex(raw: str) -> str:
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+def b64url_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+host = (os.environ.get("CASCADE_HOST") or "").strip()
+if not host:
+    raise SystemExit("CASCADE_HOST empty")
+api_port = int(os.environ.get("CASCADE_API_PORT") or "9443")
+name = (os.environ.get("CASCADE_NAME") or host).strip() or host
+
+node_id = str(uuid.uuid4())
+api_secret = secrets.token_urlsafe(48)
+issued_at = int(time.time())
+payload = {
+    "node_id": node_id,
+    "name": name,
+    "host": host,
+    "api_port": api_port,
+    "api_secret": api_secret,
+    "issued_at": issued_at,
+    "role": "exit",
 }
-EOF
-  chmod 600 "${CASCADE_META}"
-  echo "${fp}|${token}"
+payload["fingerprint"] = sha256_hex(f"{node_id}:{api_secret}:{host}:{api_port}")
+token = b64url_encode(
+    json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+)
+
+data_dir = Path(os.environ.get("CASCADE_DATA_DIR", "/opt/hy2-admin/data/cascade"))
+data_dir.mkdir(parents=True, exist_ok=True)
+meta_path = data_dir / "remote_node.json"
+meta_path.write_text(
+    json.dumps(
+        {
+            "node_id": node_id,
+            "name": name,
+            "host": host,
+            "api_port": api_port,
+            "api_secret": api_secret,
+            "fingerprint": payload["fingerprint"],
+            "issued_at": issued_at,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+os.chmod(meta_path, 0o600)
+print(token, end="")
+PY
 }
 
 print_summary() {
@@ -579,15 +632,12 @@ print_summary() {
   echo "Текущее состояние: active=${active}, enabled=${enabled}"
 
   if [[ "${CASCADE_NODE}" == "y" ]]; then
-    local pair fp token
-    pair="$(write_cascade_fingerprint)"
-    fp="${pair%%|*}"
-    token="${pair##*|}"
+    local token
+    token="$(generate_cascade_registration_token)"
     echo
-    echo "Каскадный режим: ВКЛ"
-    echo "Fingerprint: ${fp}"
-    echo "Registration token: ${token}"
-    echo "Файл: ${CASCADE_META}"
+    echo "HOST ${DOMAIN}"
+    echo "REGISTRATION_TOKEN (copy to master admin):"
+    echo "${token}"
   fi
   echo "========================================="
 }

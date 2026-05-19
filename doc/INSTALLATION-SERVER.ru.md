@@ -73,7 +73,7 @@ sudo ./install_hysteria2.sh ...
 | `--hy2-user <имя>` | Первый пользователь HY2 (по умолчанию `user1`) |
 | `--hy2-pass <пароль>` | Пароль; если не задать в `--auto`, будет случайный |
 | `--ssh-port <порт>` | Порт SSH для правил UFW (по умолчанию `22`) |
-| `--cascade-node` | Пометить узел как каскадный (exit) и вывести fingerprint |
+| `--cascade-node` | Пометить узел как каскадный (exit) и вывести **REGISTRATION_TOKEN** для master-панели |
 | `--tls-mode <режим>` | `auto` \| `acme` \| `certbot` (по умолчанию `auto`) |
 | `--tls-cert <путь>` | Явный путь к fullchain (для сценариев с certbot) |
 | `--tls-key <путь>` | Явный путь к privkey |
