@@ -1,4 +1,4 @@
-# Сборка бинарника панели (PyInstaller) — ветка dev, каталог panel/
+# Сборка бинарника панели (PyInstaller), каталог panel/
 /panel/.venv/
 /panel/build/
 /build/
