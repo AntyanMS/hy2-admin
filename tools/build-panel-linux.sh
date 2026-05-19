@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # Сборка hy2-admin-panel (linux/amd64) в dist/<version>/hy2-admin-panel
+# Исходники: panel/ (ветка dev). На main — только установщики и doc/.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PANEL="${ROOT}/panel"
 VERSION="${1:-0.0.4}"
 OUT_DIR="${ROOT}/dist/${VERSION}"
 IMAGE="${HY2_PANEL_BUILD_IMAGE:-python:3.12-slim-bookworm}"
+
+die() { echo "$*" >&2; exit 1; }
+[[ -f "${PANEL}/app.py" ]] || die "Нет ${PANEL}/app.py — нужна ветка dev (каталог panel/)."
 
 cd "${ROOT}"
 mkdir -p "${OUT_DIR}"
@@ -22,8 +27,9 @@ docker run --rm \
     apt-get update -qq
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq binutils >/dev/null
     rm -rf /work && mkdir -p /work
-    cp -a /src/app.py /src/launcher.py /src/hy2-admin-panel.spec /src/requirements.txt /src/requirements-build.txt /work/
-    cp -a /src/templates /work/templates
+    cp -a /src/panel/app.py /src/panel/launcher.py /src/panel/hy2-admin-panel.spec \
+      /src/panel/requirements.txt /src/panel/requirements-build.txt /work/
+    cp -a /src/panel/templates /work/templates
     cd /work
     python3 -m venv .venv
     . .venv/bin/activate

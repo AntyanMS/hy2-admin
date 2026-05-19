@@ -1,4 +1,6 @@
-# Сборка бинарника панели (PyInstaller)
+# Сборка бинарника панели (PyInstaller) — ветка dev, каталог panel/
+/panel/.venv/
+/panel/build/
 /build/
 /dist/
 *.spec.bak
@@ -17,3 +19,8 @@ __pycache__/
 *.pem
 *.key
 local-config*.json
+
+# Локальные артефакты (не в репозиторий)
+.backup/
+.cursor/
+tmp/
