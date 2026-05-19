@@ -131,12 +131,28 @@ sudo ./install_hysteria2.sh --auto \
 
 #### Узел каскада (exit)
 
+С флагом `--cascade-node` установщик дополнительно:
+
+- генерирует **REGISTRATION_TOKEN** для master-панели (строка `eyJ…`, не hex);
+- копирует `tools/cascade` в `/opt/hy2-admin/tools/cascade` (из репозитория или с GitHub);
+- поднимает **hy2-cascade-sync.service** на порту **9443/tcp** (UFW при включении открывает этот порт).
+
+В конце вывод:
+
+```text
+HOST example.com
+REGISTRATION_TOKEN (copy to master admin):
+eyJ…
+```
+
 ```bash
 sudo ./install_hysteria2.sh --auto \
   --domain example.com \
   --email admin@example.com \
   --cascade-node
 ```
+
+Порт sync API: `CASCADE_API_PORT` (по умолчанию `9443`). С master должен быть доступ **TCP** на этот порт.
 
 #### Явный TLS: `certbot` (удобно, если порт 80 занят под nginx и нужен webroot)
 

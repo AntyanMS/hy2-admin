@@ -19,6 +19,9 @@ CONFIG_PATH="/etc/hysteria/config.yaml"
 MASQ_DIR="/var/www/hy2-site"
 CASCADE_API_PORT="${CASCADE_API_PORT:-9443}"
 CASCADE_DATA_DIR="/opt/hy2-admin/data/cascade"
+CASCADE_TOOLS_DIR="/opt/hy2-admin/tools/cascade"
+CASCADE_REGISTRATION_TOKEN=""
+HY2_REPO_RAW_URL="${HY2_REPO_RAW_URL:-https://raw.githubusercontent.com/AntyanMS/hy2-admin/HEAD}"
 SERVER_IP=""
 FINAL_TLS_MODE=""
 FINAL_TLS_CERT=""
@@ -506,6 +509,9 @@ configure_ufw() {
   ufw allow 80/tcp >/dev/null 2>&1 || true
   ufw allow 443/tcp >/dev/null 2>&1 || true
   ufw allow 443/udp >/dev/null 2>&1 || true
+  if [[ "${CASCADE_NODE}" == "y" ]]; then
+    ufw allow "${CASCADE_API_PORT}/tcp" >/dev/null 2>&1 || true
+  fi
   ufw --force enable >/dev/null 2>&1 || true
 }
 
@@ -530,6 +536,44 @@ EOF
   systemctl daemon-reload
   systemctl enable "${SERVICE_NAME}"
   systemctl restart "${SERVICE_NAME}"
+}
+
+installer_script_dir() {
+  local src
+  src="${BASH_SOURCE[0]:-$0}"
+  if [[ -n "${src}" && "${src}" != "bash" && "${src}" != "/dev/fd/"* && -f "${src}" ]]; then
+    cd "$(dirname "${src}")" && pwd
+    return 0
+  fi
+  printf "%s" ""
+}
+
+install_cascade_tools() {
+  local dest="${CASCADE_TOOLS_DIR}" src_dir repo_dir
+  repo_dir="$(installer_script_dir)"
+  mkdir -p "${dest}"
+  if [[ -n "${repo_dir}" && -f "${repo_dir}/tools/cascade/remote_sync_service.py" ]]; then
+    src_dir="${repo_dir}/tools/cascade"
+    log "Копирование tools/cascade из репозитория (${src_dir})..."
+    cp -a "${src_dir}/." "${dest}/"
+  else
+    log "Загрузка tools/cascade с GitHub (${HY2_REPO_RAW_URL})..."
+    local base="${HY2_REPO_RAW_URL}/tools/cascade"
+    local f
+    for f in remote_sync_service.py cascade_common.py install_remote_sync_service.sh \
+      register_remote_node.py register_remote_on_master.py master_sync_worker.py \
+      install_master_sync_service.sh backup_restore.py README.md; do
+      curl -4fsSL --connect-timeout 15 --max-time 120 "${base}/${f}" -o "${dest}/${f}"
+    done
+  fi
+  chmod 0755 "${dest}"/*.sh 2>/dev/null || true
+  [[ -f "${dest}/remote_sync_service.py" ]] || die "Не найден ${dest}/remote_sync_service.py"
+}
+
+install_cascade_remote_sync_service() {
+  [[ -x "${CASCADE_TOOLS_DIR}/install_remote_sync_service.sh" ]] \
+    || die "Нет ${CASCADE_TOOLS_DIR}/install_remote_sync_service.sh"
+  bash "${CASCADE_TOOLS_DIR}/install_remote_sync_service.sh"
 }
 
 # Токен для master-панели: base64url(JSON), как tools/cascade/register_remote_node.py
@@ -601,6 +645,24 @@ print(token, end="")
 PY
 }
 
+prepare_cascade_exit_node() {
+  [[ "${CASCADE_NODE}" == "y" ]] || return 0
+  log "Каскадный exit: tools, REGISTRATION_TOKEN, sync API на ${CASCADE_API_PORT}/tcp..."
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-yaml >/dev/null 2>&1 \
+    || die "Для каскадного узла нужен пакет python3-yaml."
+  install_cascade_tools
+  CASCADE_REGISTRATION_TOKEN="$(generate_cascade_registration_token)"
+  install_cascade_remote_sync_service
+  local sync_state
+  sync_state="$(systemctl is-active hy2-cascade-sync.service 2>/dev/null || true)"
+  if [[ "${sync_state}" == "active" ]]; then
+    log "hy2-cascade-sync.service: active"
+  else
+    warn "hy2-cascade-sync.service: ${sync_state:-unknown} — проверьте: journalctl -u hy2-cascade-sync.service -n 30"
+  fi
+  warn "С master (панель) должен быть доступен TCP ${CASCADE_API_PORT} на этот хост."
+}
+
 print_summary() {
   local active enabled
   active="$(systemctl is-active "${SERVICE_NAME}" || true)"
@@ -632,12 +694,13 @@ print_summary() {
   echo "Текущее состояние: active=${active}, enabled=${enabled}"
 
   if [[ "${CASCADE_NODE}" == "y" ]]; then
-    local token
-    token="$(generate_cascade_registration_token)"
+    [[ -n "${CASCADE_REGISTRATION_TOKEN}" ]] \
+      || CASCADE_REGISTRATION_TOKEN="$(generate_cascade_registration_token)"
     echo
     echo "HOST ${DOMAIN}"
     echo "REGISTRATION_TOKEN (copy to master admin):"
-    echo "${token}"
+    echo "${CASCADE_REGISTRATION_TOKEN}"
+    echo "Cascade sync API: ${CASCADE_API_PORT}/tcp (hy2-cascade-sync.service)"
   fi
   echo "========================================="
 }
@@ -663,6 +726,7 @@ main() {
   configure_nginx_https_stub
   sync_cert_for_hysteria
   write_hysteria_config
+  prepare_cascade_exit_node
   install_renew_hook_if_possible
   configure_fail2ban
   configure_ufw
