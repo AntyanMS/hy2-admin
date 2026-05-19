@@ -35,6 +35,11 @@ def main() -> int:
     ap.add_argument("--host", default="", help="Public host/IP of remote node")
     ap.add_argument("--api-port", type=int, default=9443, help="Remote sync API port")
     ap.add_argument("--name", default="", help="Display name for node")
+    ap.add_argument("--hy2-server", default="", help="HY2 server host (default: --host)")
+    ap.add_argument("--hy2-sni", default="", help="HY2 SNI (default: hy2-server or host)")
+    ap.add_argument("--hy2-port", type=int, default=443, help="HY2 port")
+    ap.add_argument("--hop-username", default="", help="HY2 hop username (userpass)")
+    ap.add_argument("--hop-password", default="", help="HY2 hop password")
     args = ap.parse_args()
 
     ensure_dir(CASCADE_DIR)
@@ -43,6 +48,10 @@ def main() -> int:
     issued_at = int(time.time())
     node_name = args.name.strip() or socket.gethostname()
     host = detect_host(args.host.strip())
+    hy2_server = args.hy2_server.strip() or host
+    hy2_sni = args.hy2_sni.strip() or hy2_server
+    hop_username = args.hop_username.strip()
+    hop_password = args.hop_password.strip()
 
     payload = {
         "node_id": node_id,
@@ -52,6 +61,11 @@ def main() -> int:
         "api_secret": api_secret,
         "issued_at": issued_at,
         "role": "exit",
+        "hy2_server": hy2_server,
+        "hy2_sni": hy2_sni,
+        "hy2_port": args.hy2_port,
+        "hop_username": hop_username,
+        "hop_password": hop_password,
     }
     payload["fingerprint"] = sha256_hex(f"{node_id}:{api_secret}:{host}:{args.api_port}")
     token = b64url_encode(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
@@ -66,6 +80,11 @@ def main() -> int:
             "api_secret": api_secret,
             "fingerprint": payload["fingerprint"],
             "issued_at": issued_at,
+            "hy2_server": hy2_server,
+            "hy2_sni": hy2_sni,
+            "hy2_port": args.hy2_port,
+            "hop_username": hop_username,
+            "hop_password": hop_password,
         },
     )
     os.chmod(REMOTE_NODE_JSON, 0o600)

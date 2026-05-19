@@ -581,6 +581,9 @@ generate_cascade_registration_token() {
   command -v python3 >/dev/null 2>&1 || die "Для каскадного узла нужен python3."
   CASCADE_HOST="${DOMAIN}" CASCADE_NAME="${DOMAIN}" CASCADE_API_PORT="${CASCADE_API_PORT}" \
     CASCADE_DATA_DIR="${CASCADE_DATA_DIR}" \
+    CASCADE_HY2_PORT="443" \
+    CASCADE_HY2_SERVER="${DOMAIN}" CASCADE_HY2_SNI="${DOMAIN}" \
+    CASCADE_HOP_USERNAME="${HY2_USER}" CASCADE_HOP_PASSWORD="${HY2_PASS}" \
     python3 <<'PY'
 import base64
 import hashlib
@@ -602,6 +605,14 @@ if not host:
     raise SystemExit("CASCADE_HOST empty")
 api_port = int(os.environ.get("CASCADE_API_PORT") or "9443")
 name = (os.environ.get("CASCADE_NAME") or host).strip() or host
+hy2_server = (os.environ.get("CASCADE_HY2_SERVER") or host).strip() or host
+hy2_sni = (os.environ.get("CASCADE_HY2_SNI") or hy2_server).strip() or hy2_server
+try:
+    hy2_port = int(os.environ.get("CASCADE_HY2_PORT") or "443")
+except ValueError:
+    hy2_port = 443
+hop_username = (os.environ.get("CASCADE_HOP_USERNAME") or "").strip()
+hop_password = (os.environ.get("CASCADE_HOP_PASSWORD") or "").strip()
 
 node_id = str(uuid.uuid4())
 api_secret = secrets.token_urlsafe(48)
@@ -614,6 +625,11 @@ payload = {
     "api_secret": api_secret,
     "issued_at": issued_at,
     "role": "exit",
+    "hy2_server": hy2_server,
+    "hy2_sni": hy2_sni,
+    "hy2_port": hy2_port,
+    "hop_username": hop_username,
+    "hop_password": hop_password,
 }
 payload["fingerprint"] = sha256_hex(f"{node_id}:{api_secret}:{host}:{api_port}")
 token = b64url_encode(
@@ -633,6 +649,11 @@ meta_path.write_text(
             "api_secret": api_secret,
             "fingerprint": payload["fingerprint"],
             "issued_at": issued_at,
+            "hy2_server": hy2_server,
+            "hy2_sni": hy2_sni,
+            "hy2_port": hy2_port,
+            "hop_username": hop_username,
+            "hop_password": hop_password,
         },
         ensure_ascii=False,
         indent=2,

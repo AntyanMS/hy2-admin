@@ -133,7 +133,7 @@ sudo ./install_hysteria2.sh --auto \
 
 С флагом `--cascade-node` установщик дополнительно:
 
-- генерирует **REGISTRATION_TOKEN** для master-панели (строка `eyJ…`, не hex);
+- генерирует **REGISTRATION_TOKEN** для master-панели (строка `eyJ…`, не hex); в JSON внутри токена уже есть `hy2_server`, `hy2_sni`, `hy2_port` (443), `hop_username` и `hop_password` — те же учётные данные HY2, что выведены установщиком;
 - копирует `tools/cascade` в `/opt/hy2-admin/tools/cascade` (из репозитория или с GitHub);
 - поднимает **hy2-cascade-sync.service** на порту **9443/tcp** (UFW при включении открывает этот порт).
 
