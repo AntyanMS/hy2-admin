@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # Сборка hy2-admin-panel (linux/amd64) в dist/<version>/hy2-admin-panel
-# Исходники: panel/ (ветка dev). На main — только установщики и doc/.
+# Исходники: panel/ в репозитории hy2-admin.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PANEL="${ROOT}/panel"
-VERSION="${1:-0.0.5}"
+VERSION="${1:-0.0.6}"
 OUT_DIR="${ROOT}/dist/${VERSION}"
 IMAGE="${HY2_PANEL_BUILD_IMAGE:-python:3.12-slim-bookworm}"
 
 die() { echo "$*" >&2; exit 1; }
-[[ -f "${PANEL}/app.py" ]] || die "Нет ${PANEL}/app.py — нужна ветка dev (каталог panel/)."
+[[ -f "${PANEL}/app.py" ]] || die "Нет ${PANEL}/app.py — клонируйте репозиторий с каталогом panel/."
 
 cd "${ROOT}"
 mkdir -p "${OUT_DIR}"

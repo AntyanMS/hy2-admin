@@ -191,12 +191,28 @@
     .dr-whitelist-meta { font-size: 0.82rem; color: var(--muted); margin: 0 0 8px; }
     .dr-whitelist-pager { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; font-size: 0.85rem; }
     .dr-whitelist-pager input[type="text"] { flex: 1 1 160px; max-width: 280px; }
+    .dr-suffix-block {
+      display: inline-block;
+      width: max-content;
+      max-width: 100%;
+      margin: 8px 0 14px;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--bg-soft);
+    }
+    .dr-suffix-block-head {
+      margin-bottom: 8px;
+      font-weight: 600;
+      font-size: 0.9rem;
+    }
     .dr-suffix-chips {
       display: flex;
       flex-wrap: wrap;
-      gap: 8px;
-      margin: 8px 0 14px;
       align-items: center;
+      gap: 8px;
+      width: max-content;
+      max-width: 100%;
     }
     .dr-suffix-chips > label.dr-suffix-chip {
       display: inline-flex;
@@ -204,10 +220,10 @@
       gap: 6px;
       margin-top: 0;
       font-weight: 600;
-      padding: 6px 11px;
+      padding: 5px 10px;
       border: 1px solid var(--border);
-      border-radius: 999px;
-      background: var(--bg-soft);
+      border-radius: 4px;
+      background: rgba(11, 13, 18, 0.55);
       cursor: pointer;
       user-select: none;
       box-sizing: border-box;
@@ -218,9 +234,9 @@
       border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
     }
     .dr-suffix-chips > label.dr-suffix-chip:has(input:checked) {
-      border-color: var(--accent);
-      background: color-mix(in srgb, var(--accent) 14%, var(--bg-soft));
-      box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+      border-color: #22c55e;
+      background: color-mix(in srgb, #22c55e 14%, rgba(11, 13, 18, 0.55));
+      box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.45);
     }
     .dr-suffix-chips > label.dr-suffix-chip input[type="checkbox"] {
       position: absolute;
@@ -1569,16 +1585,21 @@
           <button type="button" id="whitelist-sync-btn" class="secondary-btn" data-sync-url="{{ url_for('hy2.server_direct_routing_whitelist_sync_handler') }}" title="Синхронизация файла с GitHub (hxehex/russia-mobile-internet-whitelist): https://github.com/hxehex/russia-mobile-internet-whitelist/blob/main/whitelist.txt">Синхр. с GitHub</button>
         </div>
         <label>Суффиксы доменов → direct</label>
-        <p class="muted" style="margin:4px 0 8px; font-size:0.85rem;">Отметьте зоны: трафик на выбранные суффиксы → <strong>direct</strong>, остальное — каскад / default. Клик по «чипу» включает или выключает зону.</p>
-        <div class="dr-suffix-chips" role="group" aria-label="Суффиксы доменов direct">
-          {% for opt in direct_suffix_options | default([], true) %}
-          <label class="dr-suffix-chip" title="{{ opt.title }}{% if opt.suffix != opt.label %} ({{ opt.suffix }}){% endif %}">
-            <input type="checkbox" name="direct_ru_suffixes" value="{{ opt.suffix }}" {% if opt.checked %}checked{% endif %}>
-            <span class="dr-suffix-flag-wrap" aria-hidden="true">{{ opt.flag_svg | safe }}</span>
-            <span class="dr-suffix-tld">{{ opt.label }}</span>
-          </label>
-          {% endfor %}
+        <p class="muted" style="margin:4px 0 8px; font-size:0.85rem;">Отметьте зоны: трафик на выбранные суффиксы → <strong>direct</strong>, остальное — каскад / default.</p>
+        {% for grp in direct_suffix_groups | default([], true) %}
+        <div class="dr-suffix-block" role="group" aria-label="Суффиксы доменов direct — {{ grp.country }}">
+          <div class="dr-suffix-block-head">{{ grp.country }}</div>
+          <div class="dr-suffix-chips">
+            {% for item in grp.suffixes %}
+            <label class="dr-suffix-chip" title="{{ item.title }}">
+              <input type="checkbox" name="direct_ru_suffixes" value="{{ item.suffix }}" {% if item.checked %}checked{% endif %}>
+              <span class="dr-suffix-flag-wrap" aria-hidden="true">{{ item.flag_svg | safe }}</span>
+              <span class="dr-suffix-tld">{{ item.label }}</span>
+            </label>
+            {% endfor %}
+          </div>
         </div>
+        {% endfor %}
         {% set direct_geoip_val = defaults.direct_geoip_ru if defaults.direct_geoip_ru else ('1' if direct_state.enable_geoip_ru else '') %}
         {% set direct_default_enabled_val = defaults.direct_default_enabled if defaults.direct_default_enabled else ('1' if direct_state.enable_default_outbound else '') %}
         {% set direct_default_tag_val = defaults.direct_default_outbound_tag or direct_state.default_outbound_tag or '' %}

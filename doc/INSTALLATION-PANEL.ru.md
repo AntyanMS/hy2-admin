@@ -65,6 +65,10 @@ sudo ./install_hy2_admin.sh ...
 
 Внутренний порт панели по умолчанию — `127.0.0.1:18080` (можно переопределить, см. ниже).
 
+В `/opt/hy2-admin/.env` инсталлятор задаёт `CASCADE_MASTER_ENABLED=1` (синхронизация пользователей на exit-узлы каскада из панели). Бинарь панели скачивается с **[Latest release](https://github.com/AntyanMS/hy2-admin/releases/latest)**; для фиксированной версии: `HY2_PANEL_RELEASE_TAG=v0.0.6` (см. [релизы](https://github.com/AntyanMS/hy2-admin/releases)).
+
+**Direct routing** в панели (актуально с **v0.0.6**): суффиксы `.ru` / `.рф` / `.su`, блок **Custom**, синхронизация **GitHub whitelist** — подробнее в [документе шлюза](./INSTALLATION-GATEWAY.ru.md) (раздел «Direct routing»).
+
 ---
 
 ## 4. Справка по аргументам CLI

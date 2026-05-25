@@ -100,24 +100,44 @@ WHITELIST_DNS_WORKERS = max(4, min(64, int((ENV.get("WHITELIST_DNS_WORKERS") or 
 WHITELIST_DNS_TIMEOUT_SEC = max(1.0, float((ENV.get("WHITELIST_DNS_TIMEOUT_SEC") or "4").strip() or "4"))
 _whitelist_sync_lock = threading.Lock()
 _whitelist_sync_thread: threading.Thread | None = None
-# ccTLD для правила domain_suffix → direct (чекбоксы в панели)
-DIRECT_DOMAIN_SUFFIX_OPTIONS: list[dict[str, str]] = [
-    {"flag_iso": "ru", "label": ".ru", "suffix": ".ru", "title": "Россия"},
-    {"flag_iso": "ru", "label": ".рф", "suffix": ".xn--p1ai", "title": "Россия (.рф)"},
-    {"flag_iso": "ru", "label": ".su", "suffix": ".su", "title": "СССР (.su)"},
-    {"flag_iso": "by", "label": ".by", "suffix": ".by", "title": "Беларусь"},
-    {"flag_iso": "kz", "label": ".kz", "suffix": ".kz", "title": "Казахстан"},
-    {"flag_iso": "ua", "label": ".ua", "suffix": ".ua", "title": "Украина"},
-    {"flag_iso": "am", "label": ".am", "suffix": ".am", "title": "Армения"},
-    {"flag_iso": "az", "label": ".az", "suffix": ".az", "title": "Азербайджан"},
-    {"flag_iso": "ge", "label": ".ge", "suffix": ".ge", "title": "Грузия"},
-    {"flag_iso": "kg", "label": ".kg", "suffix": ".kg", "title": "Киргизия"},
-    {"flag_iso": "md", "label": ".md", "suffix": ".md", "title": "Молдова"},
-    {"flag_iso": "tj", "label": ".tj", "suffix": ".tj", "title": "Таджикистан"},
-    {"flag_iso": "tm", "label": ".tm", "suffix": ".tm", "title": "Туркменистан"},
-    {"flag_iso": "uz", "label": ".uz", "suffix": ".uz", "title": "Узбекистан"},
+# ccTLD для правила domain_suffix → direct (чекбоксы в панели, по странам)
+DIRECT_DOMAIN_SUFFIX_GROUPS: list[dict] = [
+    {
+        "flag_iso": "ru",
+        "country": "Россия",
+        "suffixes": [
+            {"label": ".ru", "suffix": ".ru"},
+            {"label": ".рф", "suffix": ".xn--p1ai"},
+            {"label": ".su", "suffix": ".su"},
+        ],
+    },
 ]
 DIRECT_DOMAIN_SUFFIX_DEFAULT = (".ru", ".xn--p1ai", ".su")
+
+
+def _flatten_direct_suffix_options() -> list[dict[str, str]]:
+    flat: list[dict[str, str]] = []
+    for grp in DIRECT_DOMAIN_SUFFIX_GROUPS:
+        iso = str(grp.get("flag_iso", "")).strip().lower()
+        country = str(grp.get("country", "")).strip()
+        for item in grp.get("suffixes") or []:
+            if not isinstance(item, dict):
+                continue
+            suf = str(item.get("suffix", "")).strip()
+            if not suf:
+                continue
+            flat.append(
+                {
+                    "flag_iso": iso,
+                    "label": str(item.get("label", suf)),
+                    "suffix": suf,
+                    "title": country,
+                }
+            )
+    return flat
+
+
+DIRECT_DOMAIN_SUFFIX_OPTIONS: list[dict[str, str]] = _flatten_direct_suffix_options()
 CASCADE_REMOTE_SERVERS_PATH = Path("/opt/hy2-admin/data/cascade/remote_servers.json")
 BACKUP_FORMAT = "hy2-admin-backup"
 BACKUP_FORMAT_VERSION = 1
@@ -2193,25 +2213,47 @@ def _direct_ru_suffixes_from_form() -> list[str]:
     return out
 
 
-def direct_suffix_options_for_template(selected_raw: str = "") -> list[dict]:
+def direct_suffix_groups_for_template(selected_raw: str = "") -> list[dict]:
     selected = set(_split_tokens(str(selected_raw or "").replace("\n", " ")))
     if not selected:
         selected = set(DIRECT_DOMAIN_SUFFIX_DEFAULT)
-    options: list[dict] = []
-    for item in DIRECT_DOMAIN_SUFFIX_OPTIONS:
-        suf = str(item.get("suffix", "")).strip()
-        iso = str(item.get("flag_iso", "")).strip().lower() or "un"
-        options.append(
+    groups: list[dict] = []
+    for grp in DIRECT_DOMAIN_SUFFIX_GROUPS:
+        iso = str(grp.get("flag_iso", "")).strip().lower() or "un"
+        items_out: list[dict] = []
+        for item in grp.get("suffixes") or []:
+            if not isinstance(item, dict):
+                continue
+            suf = str(item.get("suffix", "")).strip()
+            if not suf:
+                continue
+            label = str(item.get("label", suf))
+            hint = str(item.get("hint") or "").strip()
+            title = str(grp.get("country", ""))
+            if hint:
+                title = f"{title} ({hint})"
+            if label != suf:
+                title = f"{title} · {suf}"
+            items_out.append(
+                {
+                    "label": label,
+                    "suffix": suf,
+                    "title": title,
+                    "flag_svg": FLAG_SVG_24x16.get(iso, FLAG_SVG_24x16.get("ru", "")),
+                    "checked": suf in selected,
+                }
+            )
+        if not items_out:
+            continue
+        groups.append(
             {
                 "flag_iso": iso,
+                "country": str(grp.get("country", "")),
                 "flag_svg": FLAG_SVG_24x16.get(iso, FLAG_SVG_24x16.get("ru", "")),
-                "label": str(item.get("label", suf)),
-                "title": str(item.get("title", "")),
-                "suffix": suf,
-                "checked": suf in selected,
+                "suffixes": items_out,
             }
         )
-    return options
+    return groups
 
 
 def _split_tokens(raw: str) -> list[str]:
@@ -4317,7 +4359,7 @@ def render_index_page(
         panel_systemd_service=PANEL_SYSTEMD_SERVICE,
         cascade_state=read_cascade_ui_state(),
         direct_state=_direct_state,
-        direct_suffix_options=direct_suffix_options_for_template(
+        direct_suffix_groups=direct_suffix_groups_for_template(
             str(merged_defaults.get("direct_ru_suffixes") or "")
             or str(_direct_state.get("ru_suffixes_text") or "")
         ),
