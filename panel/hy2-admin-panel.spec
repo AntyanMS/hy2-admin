@@ -21,6 +21,7 @@ a = Analysis(
         "PIL._imagingtk",
         "PIL._tkinter_finder",
         "pyotp",
+        "suffix_flags",
         "asgiref.wsgi",
         "hypercorn.protocol",
         "hypercorn.logging",

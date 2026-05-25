@@ -30,6 +30,8 @@ import qrcode
 import yaml
 from flask import Blueprint, Flask, Response, redirect, render_template, request, session, url_for
 
+from suffix_flags import FLAG_SVG_24x16
+
 try:
     import pyotp
 except ImportError:  # pragma: no cover
@@ -2202,7 +2204,7 @@ def direct_suffix_options_for_template(selected_raw: str = "") -> list[dict]:
         options.append(
             {
                 "flag_iso": iso,
-                "flag_url": f"https://flagcdn.com/w20/{iso}.png",
+                "flag_svg": FLAG_SVG_24x16.get(iso, FLAG_SVG_24x16.get("ru", "")),
                 "label": str(item.get("label", suf)),
                 "title": str(item.get("title", "")),
                 "suffix": suf,

@@ -231,14 +231,20 @@
       padding: 0;
       pointer-events: none;
     }
-    .dr-suffix-chip .dr-suffix-flag-img {
-      width: 20px;
-      height: 15px;
-      object-fit: cover;
-      border-radius: 2px;
+    .dr-suffix-chip .dr-suffix-flag-wrap {
       flex-shrink: 0;
+      display: inline-flex;
+      width: 24px;
+      height: 16px;
+      line-height: 0;
+      border-radius: 1px;
+      overflow: hidden;
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+    }
+    .dr-suffix-chip .dr-suffix-flag-wrap svg {
       display: block;
-      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+      width: 24px;
+      height: 16px;
     }
     .dr-suffix-chip .dr-suffix-tld {
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -1568,7 +1574,7 @@
           {% for opt in direct_suffix_options | default([], true) %}
           <label class="dr-suffix-chip" title="{{ opt.title }}{% if opt.suffix != opt.label %} ({{ opt.suffix }}){% endif %}">
             <input type="checkbox" name="direct_ru_suffixes" value="{{ opt.suffix }}" {% if opt.checked %}checked{% endif %}>
-            <img class="dr-suffix-flag-img" src="{{ opt.flag_url }}" width="20" height="15" alt="" loading="lazy" decoding="async">
+            <span class="dr-suffix-flag-wrap" aria-hidden="true">{{ opt.flag_svg | safe }}</span>
             <span class="dr-suffix-tld">{{ opt.label }}</span>
           </label>
           {% endfor %}

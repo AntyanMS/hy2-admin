@@ -27,7 +27,7 @@ docker run --rm \
     apt-get update -qq
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq binutils >/dev/null
     rm -rf /work && mkdir -p /work
-    cp -a /src/panel/app.py /src/panel/launcher.py /src/panel/hy2-admin-panel.spec \
+    cp -a /src/panel/app.py /src/panel/launcher.py /src/panel/suffix_flags.py /src/panel/hy2-admin-panel.spec \
       /src/panel/requirements.txt /src/panel/requirements-build.txt /work/
     cp -a /src/panel/templates /work/templates
     cd /work
