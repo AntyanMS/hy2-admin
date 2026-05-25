@@ -191,13 +191,64 @@
     .dr-whitelist-meta { font-size: 0.82rem; color: var(--muted); margin: 0 0 8px; }
     .dr-whitelist-pager { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; font-size: 0.85rem; }
     .dr-whitelist-pager input[type="text"] { flex: 1 1 160px; max-width: 280px; }
-    .dr-suffix-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; margin: 8px 0 14px; }
-    .dr-suffix-item { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-soft); cursor: pointer; user-select: none; }
-    .dr-suffix-item:has(input:checked) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--bg-soft)); }
-    .dr-suffix-item input { flex-shrink: 0; margin: 0; }
-    .dr-suffix-flag { font-size: 1.2rem; line-height: 1; }
-    .dr-suffix-name { flex: 1 1 auto; font-size: 0.9rem; }
-    .dr-suffix-code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.82rem; color: var(--muted); }
+    .dr-suffix-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 10px;
+      margin: 8px 0 14px;
+    }
+    .dr-suffix-grid > label.dr-suffix-item {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 10px;
+      margin-top: 0;
+      font-weight: 500;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg-soft);
+      cursor: pointer;
+      user-select: none;
+      box-sizing: border-box;
+      width: 100%;
+      min-width: 0;
+    }
+    .dr-suffix-grid > label.dr-suffix-item:has(input:checked) {
+      border-color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 10%, var(--bg-soft));
+    }
+    .dr-suffix-grid > label.dr-suffix-item input[type="checkbox"] {
+      width: 18px;
+      min-width: 18px;
+      max-width: 18px;
+      height: 18px;
+      padding: 0;
+      margin: 0;
+      flex: 0 0 18px;
+      box-sizing: border-box;
+    }
+    .dr-suffix-flag {
+      flex: 0 0 auto;
+      font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif;
+      font-size: 1.35rem;
+      line-height: 1;
+    }
+    .dr-suffix-name {
+      flex: 1 1 auto;
+      min-width: 0;
+      font-size: 0.9rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .dr-suffix-code {
+      flex: 0 0 auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.82rem;
+      color: var(--muted);
+      white-space: nowrap;
+    }
     .wl-tz-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 10px 0 8px; font-size: 0.9rem; }
     .wl-tz-row select { padding: 6px 8px; border-radius: 6px; background: var(--bg-soft); color: inherit; border: 1px solid var(--border); min-width: 200px; }
     .danger { background: #b91c1c; }
