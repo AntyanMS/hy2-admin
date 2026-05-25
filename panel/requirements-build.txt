@@ -1,0 +1,6 @@
+# Зависимости для сборки однофайлового бинарника (не нужны на сервере при USE_PANEL_BINARY=1).
+-r requirements.txt
+pyinstaller>=6.3.0
+waitress>=3.0.0
+hypercorn>=0.17.0
+asgiref>=3.8.0
