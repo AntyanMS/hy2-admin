@@ -4,7 +4,7 @@
 
 ## Сборка (Linux amd64)
 
-Из корня репозитория на ветке **`dev`**:
+Из корня репозитория:
 
 ```bash
 bash tools/build-panel-linux.sh 0.0.5
