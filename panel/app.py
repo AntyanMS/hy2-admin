@@ -98,6 +98,24 @@ WHITELIST_DNS_WORKERS = max(4, min(64, int((ENV.get("WHITELIST_DNS_WORKERS") or 
 WHITELIST_DNS_TIMEOUT_SEC = max(1.0, float((ENV.get("WHITELIST_DNS_TIMEOUT_SEC") or "4").strip() or "4"))
 _whitelist_sync_lock = threading.Lock()
 _whitelist_sync_thread: threading.Thread | None = None
+# ccTLD для правила domain_suffix → direct (чекбоксы в панели)
+DIRECT_DOMAIN_SUFFIX_OPTIONS: list[dict[str, str]] = [
+    {"flag": "🇷🇺", "country": "Россия", "suffix": ".ru"},
+    {"flag": "🇷🇺", "country": "Россия (.рф)", "suffix": ".xn--p1ai"},
+    {"flag": "🇷🇺", "country": "СССР (.su)", "suffix": ".su"},
+    {"flag": "🇧🇾", "country": "Беларусь", "suffix": ".by"},
+    {"flag": "🇰🇿", "country": "Казахстан", "suffix": ".kz"},
+    {"flag": "🇺🇦", "country": "Украина", "suffix": ".ua"},
+    {"flag": "🇦🇲", "country": "Армения", "suffix": ".am"},
+    {"flag": "🇦🇿", "country": "Азербайджан", "suffix": ".az"},
+    {"flag": "🇬🇪", "country": "Грузия", "suffix": ".ge"},
+    {"flag": "🇰🇬", "country": "Киргизия", "suffix": ".kg"},
+    {"flag": "🇲🇩", "country": "Молдова", "suffix": ".md"},
+    {"flag": "🇹🇯", "country": "Таджикистан", "suffix": ".tj"},
+    {"flag": "🇹🇲", "country": "Туркменистан", "suffix": ".tm"},
+    {"flag": "🇺🇿", "country": "Узбекистан", "suffix": ".uz"},
+]
+DIRECT_DOMAIN_SUFFIX_DEFAULT = (".ru", ".xn--p1ai", ".su")
 CASCADE_REMOTE_SERVERS_PATH = Path("/opt/hy2-admin/data/cascade/remote_servers.json")
 BACKUP_FORMAT = "hy2-admin-backup"
 BACKUP_FORMAT_VERSION = 1
@@ -2150,6 +2168,45 @@ def normalize_direct_state_for_template(ds: dict) -> dict:
         if not isinstance(merged.get(key), list):
             merged[key] = []
     return merged
+
+
+def _known_direct_suffixes() -> set[str]:
+    return {str(x.get("suffix", "")).strip() for x in DIRECT_DOMAIN_SUFFIX_OPTIONS if str(x.get("suffix", "")).strip()}
+
+
+def _direct_ru_suffixes_from_form() -> list[str]:
+    known = _known_direct_suffixes()
+    picked = request.form.getlist("direct_ru_suffixes")
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in picked:
+        s = str(raw).strip()
+        if not s.startswith("."):
+            continue
+        if s not in known:
+            raise ValueError(f"Недопустимый суффикс: {s}")
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+
+def direct_suffix_options_for_template(selected_raw: str = "") -> list[dict]:
+    selected = set(_split_tokens(str(selected_raw or "").replace("\n", " ")))
+    if not selected:
+        selected = set(DIRECT_DOMAIN_SUFFIX_DEFAULT)
+    options: list[dict] = []
+    for item in DIRECT_DOMAIN_SUFFIX_OPTIONS:
+        suf = str(item.get("suffix", "")).strip()
+        options.append(
+            {
+                "flag": str(item.get("flag", "")),
+                "country": str(item.get("country", "")),
+                "suffix": suf,
+                "checked": suf in selected,
+            }
+        )
+    return options
 
 
 def _split_tokens(raw: str) -> list[str]:
@@ -4227,6 +4284,7 @@ def render_index_page(
         }
         panel_backend = "hysteria"
 
+    _direct_state = normalize_direct_state_for_template(read_direct_routing_state())
     return render_template(
         "index.html",
         defaults=merged_defaults,
@@ -4253,7 +4311,11 @@ def render_index_page(
         panel_insecure_debug_strip_prefix=INSECURE_DEBUG_STRIP_PREFIX,
         panel_systemd_service=PANEL_SYSTEMD_SERVICE,
         cascade_state=read_cascade_ui_state(),
-        direct_state=normalize_direct_state_for_template(read_direct_routing_state()),
+        direct_state=_direct_state,
+        direct_suffix_options=direct_suffix_options_for_template(
+            str(merged_defaults.get("direct_ru_suffixes") or "")
+            or str(_direct_state.get("ru_suffixes_text") or "")
+        ),
     )
 
 
@@ -5098,7 +5160,7 @@ def server_cascade_apply_singbox_handler():
 @requires_auth
 def server_direct_routing_handler():
     explicit_json_raw = (request.form.get("direct_explicit_domains_json") or "").strip()
-    suffixes_raw = request.form.get("direct_ru_suffixes", "")
+    suffixes_raw = ""
     enable_geoip_ru = (request.form.get("direct_geoip_ru") or "") in {"1", "on", "true", "yes"}
     enable_default = (request.form.get("direct_default_enabled") or "") in {"1", "on", "true", "yes"}
     default_outbound_tag = (request.form.get("direct_default_outbound_tag") or "").strip()
@@ -5129,13 +5191,11 @@ def server_direct_routing_handler():
             explicit_hosts = deduped_h
         else:
             explicit_hosts = _split_tokens(request.form.get("direct_explicit_hosts", ""))
-        ru_suffixes = _split_tokens(suffixes_raw)
+        ru_suffixes = _direct_ru_suffixes_from_form()
+        suffixes_raw = "\n".join(ru_suffixes)
         for h in explicit_hosts:
             if not _valid_direct_explicit_hostname(h):
                 raise ValueError(f"Недопустимое имя хоста: {h}")
-        for s in ru_suffixes:
-            if not s.startswith("."):
-                raise ValueError(f"Суффикс должен начинаться с точки: {s}")
         state = read_direct_routing_state()
         available_tags = [str(x) for x in state.get("outbound_tags", []) if isinstance(x, str)]
         if enable_default:

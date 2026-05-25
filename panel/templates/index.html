@@ -191,6 +191,13 @@
     .dr-whitelist-meta { font-size: 0.82rem; color: var(--muted); margin: 0 0 8px; }
     .dr-whitelist-pager { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; font-size: 0.85rem; }
     .dr-whitelist-pager input[type="text"] { flex: 1 1 160px; max-width: 280px; }
+    .dr-suffix-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; margin: 8px 0 14px; }
+    .dr-suffix-item { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-soft); cursor: pointer; user-select: none; }
+    .dr-suffix-item:has(input:checked) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--bg-soft)); }
+    .dr-suffix-item input { flex-shrink: 0; margin: 0; }
+    .dr-suffix-flag { font-size: 1.2rem; line-height: 1; }
+    .dr-suffix-name { flex: 1 1 auto; font-size: 0.9rem; }
+    .dr-suffix-code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.82rem; color: var(--muted); }
     .wl-tz-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 10px 0 8px; font-size: 0.9rem; }
     .wl-tz-row select { padding: 6px 8px; border-radius: 6px; background: var(--bg-soft); color: inherit; border: 1px solid var(--border); min-width: 200px; }
     .danger { background: #b91c1c; }
@@ -1507,8 +1514,18 @@
           <button type="button" id="whitelist-auto-btn" class="dr-icon-btn {% if direct_state.whitelist_auto_sync_enabled %}is-on{% else %}is-off{% endif %}" style="display:{% if direct_state.whitelist_synced %}inline-flex{% else %}none{% endif %};" data-auto-enabled="{% if direct_state.whitelist_auto_sync_enabled %}1{% else %}0{% endif %}" data-auto-url="{{ url_for('hy2.server_direct_routing_whitelist_auto_handler') }}" title="Автообновление whitelist раз в сутки (GitHub). Включено — список подтягивается автоматически; выключено — только вручную." aria-pressed="{% if direct_state.whitelist_auto_sync_enabled %}true{% else %}false{% endif %}">⟳</button>
           <button type="button" id="whitelist-sync-btn" class="secondary-btn" data-sync-url="{{ url_for('hy2.server_direct_routing_whitelist_sync_handler') }}" title="Синхронизация файла с GitHub (hxehex/russia-mobile-internet-whitelist): https://github.com/hxehex/russia-mobile-internet-whitelist/blob/main/whitelist.txt">Синхр. с GitHub</button>
         </div>
-        <label>Суффиксы доменов -> direct (по одному в строке, с точкой)</label>
-        <textarea name="direct_ru_suffixes" rows="4" placeholder=".ru&#10;.xn--p1ai&#10;.su">{{ defaults.direct_ru_suffixes or direct_state.ru_suffixes_text or '' }}</textarea>
+        <label>Суффиксы доменов → direct</label>
+        <p class="muted" style="margin:4px 0 8px; font-size:0.85rem;">Выберите национальные зоны: трафик на эти суффиксы пойдёт в <strong>direct</strong> (с VPS), остальное — по правилам ниже (каскад / default).</p>
+        <div class="dr-suffix-grid" role="group" aria-label="Суффиксы доменов direct">
+          {% for opt in direct_suffix_options | default([], true) %}
+          <label class="dr-suffix-item">
+            <input type="checkbox" name="direct_ru_suffixes" value="{{ opt.suffix }}" {% if opt.checked %}checked{% endif %}>
+            <span class="dr-suffix-flag" aria-hidden="true">{{ opt.flag }}</span>
+            <span class="dr-suffix-name">{{ opt.country }}</span>
+            <span class="dr-suffix-code">{{ opt.suffix }}</span>
+          </label>
+          {% endfor %}
+        </div>
         {% set direct_geoip_val = defaults.direct_geoip_ru if defaults.direct_geoip_ru else ('1' if direct_state.enable_geoip_ru else '') %}
         {% set direct_default_enabled_val = defaults.direct_default_enabled if defaults.direct_default_enabled else ('1' if direct_state.enable_default_outbound else '') %}
         {% set direct_default_tag_val = defaults.direct_default_outbound_tag or direct_state.default_outbound_tag or '' %}
