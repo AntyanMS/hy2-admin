@@ -7,8 +7,8 @@
 Из корня репозитория на ветке **`dev`**:
 
 ```bash
-bash tools/build-panel-linux.sh 0.0.4
-# артефакт: dist/0.0.4/hy2-admin-panel
+bash tools/build-panel-linux.sh 0.0.5
+# артефакт: dist/0.0.5/hy2-admin-panel
 ```
 
 Публикация: GitHub Releases → `hy2-admin-panel`.

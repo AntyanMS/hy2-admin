@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 from datetime import datetime, timedelta, timezone
 from functools import wraps
@@ -63,6 +64,11 @@ PANEL_SYSTEMD_SERVICE = ENV.get("PANEL_SYSTEMD_SERVICE", "hy2-admin.service").st
 PROTECTED_USERS_RAW = ENV.get("PROTECTED_USERS", "")
 HY2_UI_HIDDEN_USERS_RAW = (ENV.get("HY2_UI_HIDDEN_USERS") or "").strip()
 SING_BOX_CONFIG_PATH = ENV.get("SING_BOX_CONFIG_PATH", "/etc/sing-box/config.json")
+SINGBOX_GEOIP_RU_URL = (
+    ENV.get("SINGBOX_GEOIP_RU_URL")
+    or "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-ru.srs"
+).strip()
+GEOIP_RU_RULE_SET_TAG = "geoip-ru"
 SINGBOX_CLASH_API_URL = (ENV.get("SINGBOX_CLASH_API_URL") or "http://127.0.0.1:19090").strip()
 SINGBOX_CLASH_API_SECRET = (ENV.get("SINGBOX_CLASH_API_SECRET") or "").strip()
 try:
@@ -82,6 +88,16 @@ TRAFFIC_STATE_PATH = Path("/opt/hy2-admin/data/traffic_state.json")
 USER_NOTES_PATH = Path("/opt/hy2-admin/data/user_notes.json")
 USER_IP_STATE_PATH = Path("/opt/hy2-admin/data/user_ip_state.json")
 DIRECT_EXPLICIT_STORE_PATH = Path("/opt/hy2-admin/data/direct_routing_explicit.json")
+DIRECT_WHITELIST_STORE_PATH = Path("/opt/hy2-admin/data/direct_routing_github_whitelist.json")
+GITHUB_WHITELIST_RAW_URL = (
+    ENV.get("GITHUB_WHITELIST_RAW_URL")
+    or "https://raw.githubusercontent.com/hxehex/russia-mobile-internet-whitelist/main/whitelist.txt"
+)
+WHITELIST_AUTO_SYNC_INTERVAL_SEC = 86400
+WHITELIST_DNS_WORKERS = max(4, min(64, int((ENV.get("WHITELIST_DNS_WORKERS") or "32").strip() or "32")))
+WHITELIST_DNS_TIMEOUT_SEC = max(1.0, float((ENV.get("WHITELIST_DNS_TIMEOUT_SEC") or "4").strip() or "4"))
+_whitelist_sync_lock = threading.Lock()
+_whitelist_sync_thread: threading.Thread | None = None
 CASCADE_REMOTE_SERVERS_PATH = Path("/opt/hy2-admin/data/cascade/remote_servers.json")
 BACKUP_FORMAT = "hy2-admin-backup"
 BACKUP_FORMAT_VERSION = 1
@@ -268,6 +284,64 @@ def schedule_panel_service_restart() -> None:
             pass
 
     threading.Thread(target=_run, daemon=True).start()
+
+
+def _deferred_service_restart_delay_sec() -> float:
+    raw = (ENV.get("DEFERRED_SERVICE_RESTART_SEC") or "3").strip()
+    try:
+        delay = float(raw)
+    except ValueError:
+        delay = 3.0
+    return max(0.5, min(delay, 60.0))
+
+
+def schedule_systemd_service_restart(service: str, *, delay_sec: float | None = None) -> tuple[bool, str]:
+    """Планирует systemctl restart после паузы, чтобы HTTP-ответ успел дойти до клиента."""
+    svc = (service or "").strip()
+    if not svc:
+        return False, "пустое имя unit"
+
+    delay = _deferred_service_restart_delay_sec() if delay_sec is None else float(delay_sec)
+    delay = max(0.5, min(delay, 60.0))
+
+    active = subprocess.run(
+        ["systemctl", "is-active", svc],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if active.returncode != 0 or active.stdout.strip() != "active":
+        return False, active.stdout.strip() or "inactive"
+
+    def _run() -> None:
+        time.sleep(delay)
+        try:
+            subprocess.run(
+                ["systemctl", "restart", svc],
+                capture_output=True,
+                text=True,
+                timeout=90,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    threading.Thread(target=_run, daemon=True).start()
+    delay_label = str(int(delay)) if delay == int(delay) else f"{delay:g}"
+    return True, f"через {delay_label} сек"
+
+
+def _schedule_sing_box_restart() -> tuple[bool, str]:
+    return schedule_systemd_service_restart("sing-box")
+
+
+def _sing_box_restart_phrase(ok: bool, status: str, *, inline: bool = False) -> str:
+    if ok:
+        if inline:
+            return f", sing-box перезапустится {status}."
+        return f" sing-box перезапустится {status}."
+    if inline:
+        return f", sing-box: {status} (конфиг записан)."
+    return f" sing-box: {status} (конфиг записан)."
 
 
 def panel_nginx_site_paths_from_env(env: dict) -> list[Path]:
@@ -1483,20 +1557,34 @@ def _send_cascade_payload(remote: dict, payload: dict) -> tuple[bool, str]:
         return False, f"error:{e}"
 
 
+def _cascade_remote_is_hybrid(remote: dict) -> bool:
+    raw = remote.get("hybrid")
+    if raw is True or raw == 1:
+        return True
+    if isinstance(raw, str) and raw.strip().lower() in {"1", "true", "yes", "on"}:
+        return True
+    return str(remote.get("sync_mode", "")).strip().lower() == "hybrid"
+
+
 def cascade_sync_users_best_effort(reason: str) -> None:
     if not _is_cascade_master_enabled():
         return
     remotes = _load_cascade_remote_servers()
     if not remotes:
         return
-    payload = {
+    snapshot = _build_cascade_users_snapshot()
+    base_payload = {
         "source": "gateway",
         "reason": reason,
         "ts": int(time.time()),
-        "snapshot": _build_cascade_users_snapshot(),
+        "snapshot": snapshot,
     }
     status_rows: list[dict] = []
     for remote in remotes:
+        payload = dict(base_payload)
+        if _cascade_remote_is_hybrid(remote):
+            payload["hybrid"] = True
+            payload["sync_mode"] = "hybrid"
         ok, msg = _send_cascade_payload(remote, payload)
         status_rows.append(
             {
@@ -1712,19 +1800,7 @@ def _strip_managed_cascade_outbounds(cfg: dict, selector_tag: str) -> None:
 
 
 def _restart_sing_box_best_effort() -> tuple[bool, str]:
-    sing_active = subprocess.run(
-        ["systemctl", "is-active", "sing-box"],
-        capture_output=True,
-        text=True,
-        timeout=15,
-    )
-    if sing_active.returncode != 0 or sing_active.stdout.strip() != "active":
-        return False, sing_active.stdout.strip() or "inactive"
-    r = subprocess.run(["systemctl", "restart", "sing-box"], capture_output=True, text=True, timeout=40)
-    if r.returncode != 0:
-        err = (r.stderr or r.stdout or "").strip() or f"код {r.returncode}"
-        return False, err
-    return True, "ok"
+    return _schedule_sing_box_restart()
 
 
 def apply_cascade_singbox_outbounds(*, lb_mode: str | None = None) -> str:
@@ -1764,8 +1840,8 @@ def apply_cascade_singbox_outbounds(*, lb_mode: str | None = None) -> str:
 
     if not candidates:
         p.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        ok, st = _restart_sing_box_best_effort()
-        extra = f", sing-box перезапущен ({st})" if ok else f", sing-box: {st}"
+        ok, st = _schedule_sing_box_restart()
+        extra = _sing_box_restart_phrase(ok, st, inline=True)
         return (
             "Каскадные outbounds удалены из sing-box (нет узлов с заполненным HY2 hop-паролем и адресом)."
             + extra
@@ -1777,8 +1853,8 @@ def apply_cascade_singbox_outbounds(*, lb_mode: str | None = None) -> str:
         ob = _build_one_cascade_hysteria2_outbound(first, tag=selector_tag)
         obs.append(ob)
         p.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        ok, st = _restart_sing_box_best_effort()
-        tail = f" sing-box перезапущен." if ok else f" sing-box: {st} (конфиг записан)."
+        ok, st = _schedule_sing_box_restart()
+        tail = _sing_box_restart_phrase(ok, st)
         return (
             f"Каскад: один exit → outbound «{selector_tag}» (режим single, первый доступный узел в списке).{tail}"
         )
@@ -1818,9 +1894,9 @@ def apply_cascade_singbox_outbounds(*, lb_mode: str | None = None) -> str:
     obs.append(composite)
 
     p.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    ok, st = _restart_sing_box_best_effort()
+    ok, st = _schedule_sing_box_restart()
     mode_human = "urltest (мин. задержка к пробе)"
-    tail = f" sing-box перезапущен." if ok else f" sing-box: {st} (конфиг записан)."
+    tail = _sing_box_restart_phrase(ok, st)
     return (
         f"Каскад: записано {len(tags)} HY2 outbounds + группа «{selector_tag}» ({mode_human}).{tail}"
     )
@@ -1910,6 +1986,20 @@ def read_cascade_ui_state() -> dict:
     }
 
 
+def _attach_whitelist_summary(out: dict) -> dict:
+    wl = load_direct_whitelist_store()
+    out["whitelist_synced"] = bool(wl.get("synced_at"))
+    out["whitelist_domains_count"] = len(wl.get("domains") or [])
+    out["whitelist_ip_count"] = len(_whitelist_merged_ip_cidrs(wl))
+    out["whitelist_auto_sync_enabled"] = bool(wl.get("auto_sync_enabled"))
+    out["whitelist_synced_at"] = str(wl.get("synced_at") or "")
+    out["whitelist_last_sync_at"] = str(wl.get("last_sync_at") or "")
+    out["whitelist_sync_status"] = str(wl.get("sync_status") or "idle")
+    out["whitelist_sync_error"] = str(wl.get("sync_error") or "")
+    out["whitelist_source_url"] = str(wl.get("source_url") or GITHUB_WHITELIST_RAW_URL)
+    return out
+
+
 def read_direct_routing_state() -> dict:
     p = Path(SING_BOX_CONFIG_PATH)
     out = {
@@ -1928,15 +2018,24 @@ def read_direct_routing_state() -> dict:
         "enable_default_outbound": False,
         "explicit_domains_list": [],
         "explicit_domains_detail": [],
+        "whitelist_synced": False,
+        "whitelist_domains_count": 0,
+        "whitelist_ip_count": 0,
+        "whitelist_auto_sync_enabled": False,
+        "whitelist_synced_at": "",
+        "whitelist_last_sync_at": "",
+        "whitelist_sync_status": "idle",
+        "whitelist_sync_error": "",
+        "whitelist_source_url": GITHUB_WHITELIST_RAW_URL,
     }
     if not p.exists():
         out["load_error"] = "Файл конфигурации sing-box не найден"
-        return out
+        return _attach_whitelist_summary(out)
     try:
         cfg = json.loads(p.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as e:
         out["load_error"] = f"Ошибка чтения sing-box: {e}"
-        return out
+        return _attach_whitelist_summary(out)
 
     outbounds = cfg.get("outbounds") if isinstance(cfg, dict) else None
     if isinstance(outbounds, list):
@@ -1960,7 +2059,7 @@ def read_direct_routing_state() -> dict:
         if outbound == "direct":
             out["direct_rule_count"] += 1
             rs = r.get("rule_set")
-            if isinstance(rs, list) and "geoip-ru" in rs:
+            if isinstance(rs, list) and GEOIP_RU_RULE_SET_TAG in rs:
                 out["has_geoip_ru_direct"] = True
             ds = r.get("domain_suffix")
             if isinstance(ds, list):
@@ -2013,7 +2112,7 @@ def read_direct_routing_state() -> dict:
         }
         for d in doms
     ]
-    return out
+    return _attach_whitelist_summary(out)
 
 
 def normalize_direct_state_for_template(ds: dict) -> dict:
@@ -2034,6 +2133,15 @@ def normalize_direct_state_for_template(ds: dict) -> dict:
         "enable_default_outbound": False,
         "explicit_domains_list": [],
         "explicit_domains_detail": [],
+        "whitelist_synced": False,
+        "whitelist_domains_count": 0,
+        "whitelist_ip_count": 0,
+        "whitelist_auto_sync_enabled": False,
+        "whitelist_synced_at": "",
+        "whitelist_last_sync_at": "",
+        "whitelist_sync_status": "idle",
+        "whitelist_sync_error": "",
+        "whitelist_source_url": GITHUB_WHITELIST_RAW_URL,
     }
     if not isinstance(ds, dict):
         return defaults
@@ -2104,6 +2212,344 @@ def save_direct_explicit_store(
     )
 
 
+def load_direct_whitelist_store() -> dict:
+    empty = {
+        "domains": [],
+        "last_resolved": {},
+        "resolve_errors": {},
+        "source_url": GITHUB_WHITELIST_RAW_URL,
+        "synced_at": "",
+        "last_sync_at": "",
+        "auto_sync_enabled": False,
+        "sync_status": "idle",
+        "sync_started_at": "",
+        "sync_error": "",
+    }
+    if not DIRECT_WHITELIST_STORE_PATH.exists():
+        return empty
+    try:
+        data = json.loads(DIRECT_WHITELIST_STORE_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return empty
+    if not isinstance(data, dict):
+        return empty
+    doms = data.get("domains")
+    if not isinstance(doms, list):
+        doms = []
+    lr = data.get("last_resolved")
+    if not isinstance(lr, dict):
+        lr = {}
+    er = data.get("resolve_errors")
+    if not isinstance(er, dict):
+        er = {}
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for x in doms:
+        d = str(x).strip().lower().rstrip(".")
+        if d and d not in seen:
+            seen.add(d)
+            cleaned.append(d)
+    out = {**empty, **data}
+    out["domains"] = cleaned
+    out["last_resolved"] = {str(k): v for k, v in lr.items()}
+    out["resolve_errors"] = {str(k): str(v) for k, v in er.items()}
+    out["source_url"] = str(out.get("source_url") or GITHUB_WHITELIST_RAW_URL)
+    out["synced_at"] = str(out.get("synced_at") or "")
+    out["last_sync_at"] = str(out.get("last_sync_at") or "")
+    out["auto_sync_enabled"] = bool(out.get("auto_sync_enabled"))
+    out["sync_status"] = str(out.get("sync_status") or "idle")
+    out["sync_started_at"] = str(out.get("sync_started_at") or "")
+    out["sync_error"] = str(out.get("sync_error") or "")
+    return out
+
+
+def save_direct_whitelist_store(data: dict) -> None:
+    DIRECT_WHITELIST_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "domains": list(data.get("domains") or []),
+        "last_resolved": data.get("last_resolved") if isinstance(data.get("last_resolved"), dict) else {},
+        "resolve_errors": data.get("resolve_errors") if isinstance(data.get("resolve_errors"), dict) else {},
+        "source_url": str(data.get("source_url") or GITHUB_WHITELIST_RAW_URL),
+        "synced_at": str(data.get("synced_at") or ""),
+        "last_sync_at": str(data.get("last_sync_at") or ""),
+        "auto_sync_enabled": bool(data.get("auto_sync_enabled")),
+        "sync_status": str(data.get("sync_status") or "idle"),
+        "sync_started_at": str(data.get("sync_started_at") or ""),
+        "sync_error": str(data.get("sync_error") or ""),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    DIRECT_WHITELIST_STORE_PATH.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _whitelist_merged_ip_cidrs(store: dict) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    lr = store.get("last_resolved")
+    if not isinstance(lr, dict):
+        return merged
+    for v in lr.values():
+        if not isinstance(v, list):
+            continue
+        for c in v:
+            cs = str(c).strip()
+            if cs and cs not in seen:
+                seen.add(cs)
+                merged.append(cs)
+    return merged
+
+
+def _whitelist_domains_detail(store: dict) -> list[dict]:
+    doms = store.get("domains") if isinstance(store.get("domains"), list) else []
+    lr = store.get("last_resolved") if isinstance(store.get("last_resolved"), dict) else {}
+    errs = store.get("resolve_errors") if isinstance(store.get("resolve_errors"), dict) else {}
+    out: list[dict] = []
+    for d in doms:
+        dd = str(d).strip().lower().rstrip(".")
+        if not dd:
+            continue
+        cidrs_raw = lr.get(dd) or lr.get(d) or []
+        cidrs = [str(x) for x in cidrs_raw] if isinstance(cidrs_raw, list) else []
+        out.append(
+            {
+                "domain": dd,
+                "cidrs": cidrs,
+                "error": str(errs.get(dd) or errs.get(d) or ""),
+            }
+        )
+    return out
+
+
+def fetch_github_whitelist_domains() -> list[str]:
+    req = Request(
+        GITHUB_WHITELIST_RAW_URL,
+        headers={"User-Agent": "hy2-admin-panel/whitelist-sync"},
+    )
+    try:
+        with urlopen(req, timeout=90) as resp:
+            text = resp.read().decode("utf-8", errors="replace")
+    except URLError as e:
+        raise ValueError(f"Не удалось загрузить whitelist с GitHub: {e}") from e
+    domains: list[str] = []
+    seen: set[str] = set()
+    for line in text.splitlines():
+        raw = line.strip()
+        if not raw or raw.startswith("#"):
+            continue
+        d = raw.lower().rstrip(".")
+        if not d or not _valid_direct_explicit_hostname(d):
+            continue
+        if d not in seen:
+            seen.add(d)
+            domains.append(d)
+    if not domains:
+        raise ValueError("Файл whitelist пуст или не содержит доменов")
+    return domains
+
+
+def resolve_domains_to_ip_cidrs_bulk(domains: list[str]) -> tuple[dict[str, list[str]], dict[str, str], list[str]]:
+    last_resolved: dict[str, list[str]] = {}
+    resolve_errors: dict[str, str] = {}
+    merged_cidrs: list[str] = []
+    seen_c: set[str] = set()
+    if not domains:
+        return last_resolved, resolve_errors, merged_cidrs
+
+    def _one(domain: str) -> tuple[str, list[str], str]:
+        cidrs, err = resolve_domain_to_ip_cidrs(domain)
+        return domain, cidrs, err
+
+    workers = min(WHITELIST_DNS_WORKERS, max(1, len(domains)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_one, d) for d in domains]
+        for fut in as_completed(futures):
+            d, cidrs, err = fut.result()
+            last_resolved[d] = cidrs
+            if err:
+                resolve_errors[d] = err
+            for c in cidrs:
+                if c not in seen_c:
+                    seen_c.add(c)
+                    merged_cidrs.append(c)
+    return last_resolved, resolve_errors, merged_cidrs
+
+
+def _read_direct_routing_singbox_settings() -> dict:
+    """Текущие суффиксы / geoip / default outbound из sing-box (без списков доменов)."""
+    out = {
+        "ru_suffixes": [".ru", ".xn--p1ai", ".su"],
+        "enable_geoip_ru": False,
+        "enable_default_outbound": False,
+        "default_outbound_tag": "",
+    }
+    p = Path(SING_BOX_CONFIG_PATH)
+    if not p.exists():
+        return out
+    try:
+        cfg = json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return out
+    route = cfg.get("route") if isinstance(cfg, dict) else None
+    rules = route.get("rules") if isinstance(route, dict) else []
+    if not isinstance(rules, list):
+        return out
+    for r in rules:
+        if not isinstance(r, dict):
+            continue
+        outbound = str(r.get("outbound", "")).strip()
+        if outbound == "direct":
+            rs = r.get("rule_set")
+            if isinstance(rs, list) and GEOIP_RU_RULE_SET_TAG in rs:
+                out["enable_geoip_ru"] = True
+            ds = r.get("domain_suffix")
+            if isinstance(ds, list) and ds:
+                out["ru_suffixes"] = [str(x).strip() for x in ds if str(x).strip()]
+        elif outbound and outbound != "direct" and len(r.keys()) == 1:
+            out["enable_default_outbound"] = True
+            if not out["default_outbound_tag"]:
+                out["default_outbound_tag"] = outbound
+    return out
+
+
+def apply_direct_routing_from_stores(
+    *,
+    explicit_hosts: list[str] | None = None,
+    explicit_ip_cidrs: list[str] | None = None,
+) -> None:
+    explicit_store = load_direct_explicit_store()
+    whitelist_store = load_direct_whitelist_store()
+    hosts = explicit_hosts if explicit_hosts is not None else list(explicit_store["domains"])
+    if explicit_ip_cidrs is not None:
+        custom_cidrs = explicit_ip_cidrs
+    else:
+        custom_cidrs = []
+        seen_c: set[str] = set()
+        lr = explicit_store.get("last_resolved")
+        if isinstance(lr, dict):
+            for v in lr.values():
+                if not isinstance(v, list):
+                    continue
+                for c in v:
+                    cs = str(c).strip()
+                    if cs and cs not in seen_c:
+                        seen_c.add(cs)
+                        custom_cidrs.append(cs)
+    flags = _read_direct_routing_singbox_settings()
+    apply_direct_routing_rules(
+        explicit_hosts=hosts,
+        explicit_ip_cidrs=custom_cidrs,
+        whitelist_hosts=list(whitelist_store["domains"]),
+        whitelist_ip_cidrs=_whitelist_merged_ip_cidrs(whitelist_store),
+        ru_suffixes=flags["ru_suffixes"],
+        enable_geoip_ru=flags["enable_geoip_ru"],
+        enable_default_outbound=flags["enable_default_outbound"],
+        default_outbound_tag=flags["default_outbound_tag"],
+    )
+
+
+def _run_github_whitelist_sync(*, first_sync: bool = False) -> None:
+    store = load_direct_whitelist_store()
+    store["sync_status"] = "running"
+    store["sync_started_at"] = datetime.now(timezone.utc).isoformat()
+    store["sync_error"] = ""
+    save_direct_whitelist_store(store)
+    try:
+        domains = fetch_github_whitelist_domains()
+        last_resolved, resolve_errors, merged_cidrs = resolve_domains_to_ip_cidrs_bulk(domains)
+        now = datetime.now(timezone.utc).isoformat()
+        store = load_direct_whitelist_store()
+        store["domains"] = domains
+        store["last_resolved"] = last_resolved
+        store["resolve_errors"] = resolve_errors
+        store["source_url"] = GITHUB_WHITELIST_RAW_URL
+        if first_sync or not store.get("synced_at"):
+            store["synced_at"] = now
+            store["auto_sync_enabled"] = True
+        store["last_sync_at"] = now
+        store["sync_status"] = "idle"
+        store["sync_started_at"] = ""
+        store["sync_error"] = ""
+        save_direct_whitelist_store(store)
+        apply_direct_routing_from_stores()
+        sing_active = subprocess.run(
+            ["systemctl", "is-active", "sing-box"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if sing_active.returncode == 0 and sing_active.stdout.strip() == "active":
+            _schedule_sing_box_restart()
+    except Exception as e:
+        store = load_direct_whitelist_store()
+        store["sync_status"] = "idle"
+        store["sync_started_at"] = ""
+        store["sync_error"] = str(e)
+        save_direct_whitelist_store(store)
+
+
+def _start_github_whitelist_sync_thread(*, first_sync: bool = False) -> bool:
+    global _whitelist_sync_thread
+    with _whitelist_sync_lock:
+        store = load_direct_whitelist_store()
+        if store.get("sync_status") == "running":
+            if _whitelist_sync_thread and _whitelist_sync_thread.is_alive():
+                return False
+        store["sync_status"] = "running"
+        store["sync_started_at"] = datetime.now(timezone.utc).isoformat()
+        store["sync_error"] = ""
+        save_direct_whitelist_store(store)
+
+        def _worker() -> None:
+            try:
+                _run_github_whitelist_sync(first_sync=first_sync)
+            finally:
+                global _whitelist_sync_thread
+                with _whitelist_sync_lock:
+                    _whitelist_sync_thread = None
+
+        _whitelist_sync_thread = threading.Thread(
+            target=_worker,
+            name="github-whitelist-sync",
+            daemon=True,
+        )
+        _whitelist_sync_thread.start()
+        return True
+
+
+def _maybe_auto_sync_github_whitelist() -> None:
+    store = load_direct_whitelist_store()
+    if not store.get("synced_at"):
+        return
+    if not store.get("auto_sync_enabled"):
+        return
+    if store.get("sync_status") == "running":
+        return
+    last_raw = str(store.get("last_sync_at") or store.get("synced_at") or "")
+    last_dt = iso_to_dt(last_raw)
+    if last_dt is None:
+        return
+    if datetime.now(timezone.utc) - last_dt < timedelta(seconds=WHITELIST_AUTO_SYNC_INTERVAL_SEC):
+        return
+    _start_github_whitelist_sync_thread(first_sync=False)
+
+
+def _whitelist_auto_sync_loop() -> None:
+    time.sleep(30)
+    while True:
+        try:
+            _maybe_auto_sync_github_whitelist()
+        except Exception:
+            pass
+        time.sleep(3600)
+
+
+def _start_whitelist_background_tasks() -> None:
+    t = threading.Thread(target=_whitelist_auto_sync_loop, name="whitelist-auto-sync", daemon=True)
+    t.start()
+
+
 def _valid_direct_explicit_hostname(h: str) -> bool:
     t = str(h).strip().lower().rstrip(".")
     if not t or len(t) > 253:
@@ -2161,7 +2607,39 @@ def _is_geoip_ru_rule(rule: dict) -> bool:
     if str(rule.get("outbound", "")).strip() != "direct":
         return False
     rs = rule.get("rule_set")
-    return isinstance(rs, list) and "geoip-ru" in rs
+    return isinstance(rs, list) and GEOIP_RU_RULE_SET_TAG in rs
+
+
+def _is_geoip_ru_rule_set_def(item: dict) -> bool:
+    return isinstance(item, dict) and str(item.get("tag", "")).strip() == GEOIP_RU_RULE_SET_TAG
+
+
+def _default_geoip_ru_rule_set_entry() -> dict:
+    return {
+        "tag": GEOIP_RU_RULE_SET_TAG,
+        "type": "remote",
+        "format": "binary",
+        "url": SINGBOX_GEOIP_RU_URL,
+        "download_detour": "direct",
+    }
+
+
+def _sync_route_rule_set_geoip_ru(route: dict, *, enable: bool) -> None:
+    """Добавляет/убирает remote rule-set geoip-ru (без него sing-box падает: rule-set not found)."""
+    raw = route.get("rule_set")
+    kept: list[dict] = []
+    if isinstance(raw, list):
+        kept = [x for x in raw if isinstance(x, dict) and not _is_geoip_ru_rule_set_def(x)]
+    if enable:
+        kept.append(_default_geoip_ru_rule_set_entry())
+        route["rule_set"] = kept
+        return
+    if kept:
+        route["rule_set"] = kept
+    elif isinstance(raw, list):
+        route["rule_set"] = []
+    elif "rule_set" in route:
+        del route["rule_set"]
 
 
 def _is_non_direct_default_rule(rule: dict) -> bool:
@@ -2193,6 +2671,8 @@ def apply_direct_routing_rules(
     *,
     explicit_hosts: list[str],
     explicit_ip_cidrs: list[str],
+    whitelist_hosts: list[str] | None = None,
+    whitelist_ip_cidrs: list[str] | None = None,
     ru_suffixes: list[str],
     enable_geoip_ru: bool,
     enable_default_outbound: bool,
@@ -2246,16 +2726,23 @@ def apply_direct_routing_rules(
     new_rules.extend(pre_rules)
     if explicit_ip_cidrs:
         new_rules.append({"ip_cidr": explicit_ip_cidrs, "outbound": "direct"})
+    wl_cidrs = list(whitelist_ip_cidrs or [])
+    if wl_cidrs:
+        new_rules.append({"ip_cidr": wl_cidrs, "outbound": "direct"})
     if explicit_hosts:
         new_rules.append({"domain": explicit_hosts, "outbound": "direct"})
+    wl_hosts = list(whitelist_hosts or [])
+    if wl_hosts:
+        new_rules.append({"domain": wl_hosts, "outbound": "direct"})
     if ru_suffixes:
         new_rules.append({"domain_suffix": ru_suffixes, "outbound": "direct"})
     if enable_geoip_ru:
-        new_rules.append({"rule_set": ["geoip-ru"], "outbound": "direct"})
+        new_rules.append({"rule_set": [GEOIP_RU_RULE_SET_TAG], "outbound": "direct"})
     new_rules.extend(kept_rest)
     if enable_default_outbound and default_outbound_tag:
         new_rules.append({"outbound": default_outbound_tag})
     route["rules"] = new_rules
+    _sync_route_rule_set_geoip_ru(route, enable=enable_geoip_ru)
     p.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
@@ -4121,6 +4608,18 @@ def users_note_handler():
         return render_index_page(error_message=str(e))
 
 
+def build_backup_export_filename() -> str:
+    """Имя файла: домен-дд.мм.гг-чч.мм.json (часовой пояс панели)."""
+    host = (SERVER_HOST or "server").strip().lower()
+    host = re.sub(r"[^\w.\-]", "-", host).strip(".-") or "server"
+    try:
+        tz = ZoneInfo(get_panel_timezone())
+    except Exception:
+        tz = ZoneInfo("Europe/Moscow")
+    now = datetime.now(tz)
+    return f"{host}-{now.strftime('%d.%m.%y')}-{now.strftime('%H.%M')}.json"
+
+
 @bp.route("/server/backup/export", methods=["POST"])
 @requires_auth
 def server_backup_export_handler():
@@ -4163,8 +4662,7 @@ def server_backup_export_handler():
             }
 
         body = json.dumps(payload, ensure_ascii=False, indent=2)
-        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        filename = f"hy2-admin-backup-{ts}.json"
+        filename = build_backup_export_filename()
         return Response(
             body,
             mimetype="application/json; charset=utf-8",
@@ -4677,6 +5175,8 @@ def server_direct_routing_handler():
         apply_direct_routing_rules(
             explicit_hosts=explicit_hosts,
             explicit_ip_cidrs=merged_cidrs,
+            whitelist_hosts=list(load_direct_whitelist_store()["domains"]),
+            whitelist_ip_cidrs=_whitelist_merged_ip_cidrs(load_direct_whitelist_store()),
             ru_suffixes=ru_suffixes,
             enable_geoip_ru=enable_geoip_ru,
             enable_default_outbound=enable_default,
@@ -4694,11 +5194,11 @@ def server_direct_routing_handler():
             text=True,
             timeout=15,
         )
+        restart_note = ""
         if sing_active.returncode == 0 and sing_active.stdout.strip() == "active":
-            subprocess.run(["systemctl", "restart", "sing-box"], capture_output=True, text=True, timeout=40)
-            msg = f"Direct routing правила сохранены, sing-box перезапущен{default_note}"
-        else:
-            msg = f"Direct routing правила сохранены{default_note}"
+            ok_rb, st_rb = _schedule_sing_box_restart()
+            restart_note = _sing_box_restart_phrase(ok_rb, st_rb, inline=True)
+        msg = f"Direct routing правила сохранены{restart_note}{default_note}"
         return render_index_page(ok_message=msg)
     except Exception as e:
         err_domains_json = explicit_json_raw
@@ -4714,6 +5214,45 @@ def server_direct_routing_handler():
             },
             error_message=f"Direct routing: {e}",
         )
+
+
+@bp.route("/server/direct-routing/whitelist-sync", methods=["POST"])
+@requires_auth
+def server_direct_routing_whitelist_sync_handler():
+    try:
+        store = load_direct_whitelist_store()
+        first = not bool(store.get("synced_at"))
+        started = _start_github_whitelist_sync_thread(first_sync=first)
+        if not started:
+            return render_index_page(ok_message="Синхронизация GitHub whitelist уже выполняется.")
+        note = (
+            "Синхронизация GitHub whitelist запущена (DNS и правила direct). "
+            "Обновите страницу через минуту."
+        )
+        if first:
+            note += " Автообновление раз в сутки включено — можно отключить кнопкой ⟳."
+        return render_index_page(ok_message=note)
+    except Exception as e:
+        return render_index_page(error_message=f"GitHub whitelist: {e}")
+
+
+@bp.route("/server/direct-routing/whitelist-auto", methods=["POST"])
+@requires_auth
+def server_direct_routing_whitelist_auto_handler():
+    try:
+        store = load_direct_whitelist_store()
+        if not store.get("synced_at"):
+            raise ValueError("Сначала выполните синхронизацию с GitHub")
+        enable = (request.form.get("whitelist_auto_sync") or "") in {"1", "on", "true", "yes"}
+        store["auto_sync_enabled"] = enable
+        save_direct_whitelist_store(store)
+        if enable:
+            msg = "Автообновление GitHub whitelist включено (раз в сутки)."
+        else:
+            msg = "Автообновление GitHub whitelist отключено."
+        return render_index_page(ok_message=msg)
+    except Exception as e:
+        return render_index_page(error_message=f"GitHub whitelist: {e}")
 
 
 @bp.route("/server/panel-timezone", methods=["POST"])
@@ -4932,6 +5471,25 @@ def api_direct_routing_explicit_state_handler():
     return Response(json.dumps(payload, ensure_ascii=False), mimetype="application/json")
 
 
+@bp.route("/api/server/direct-routing-whitelist", methods=["GET"])
+@requires_auth
+def api_direct_routing_whitelist_state_handler():
+    store = load_direct_whitelist_store()
+    payload = {
+        "synced": bool(store.get("synced_at")),
+        "domains_count": len(store.get("domains") or []),
+        "ip_count": len(_whitelist_merged_ip_cidrs(store)),
+        "auto_sync_enabled": bool(store.get("auto_sync_enabled")),
+        "synced_at": str(store.get("synced_at") or ""),
+        "last_sync_at": str(store.get("last_sync_at") or ""),
+        "sync_status": str(store.get("sync_status") or "idle"),
+        "sync_error": str(store.get("sync_error") or ""),
+        "source_url": str(store.get("source_url") or GITHUB_WHITELIST_RAW_URL),
+        "domains_detail": _whitelist_domains_detail(store),
+    }
+    return Response(json.dumps(payload, ensure_ascii=False), mimetype="application/json")
+
+
 if PANEL_URL_PREFIX:
     app.register_blueprint(bp, url_prefix=PANEL_URL_PREFIX)
 else:
@@ -4958,6 +5516,7 @@ if INSECURE_DEBUG_STRIP_PREFIX:
 
     app.wsgi_app = _StripNginxPanelPrefix(app.wsgi_app, INSECURE_DEBUG_STRIP_PREFIX)  # type: ignore[method-assign]
 
+_start_whitelist_background_tasks()
 
 if __name__ == "__main__":
     app.run(host=BIND_HOST, port=BIND_PORT)

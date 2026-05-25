@@ -74,6 +74,21 @@ flowchart LR
 
 Точные правила задаются генерируемым `/etc/sing-box/config.json`; панель управляет пользователями и базой узлов (`remote_servers.json`).
 
+### Синхронизация whitelist для direct routing (GitHub)
+
+В панели (ветка **dev**, релиз **v0.0.5+**) на вкладке **Direct routing** можно подтянуть список доменов из внешнего открытого репозитория и применить их к правилам **direct** (включая IP по DNS):
+
+| | |
+|--|--|
+| **Репозиторий** | [hxehex/russia-mobile-internet-whitelist](https://github.com/hxehex/russia-mobile-internet-whitelist) |
+| **Файл** | [`whitelist.txt`](https://github.com/hxehex/russia-mobile-internet-whitelist/blob/main/whitelist.txt) (raw: `raw.githubusercontent.com/.../main/whitelist.txt`) |
+
+Список **не входит** в состав hy2-admin: панель загружает его по запросу администратора (кнопка «Синхр. с GitHub») или по расписанию (раз в сутки, если включено автообновление). Собственные домены по-прежнему задаются в блоке **Custom**.
+
+**Благодарность:** отдельное спасибо автору [**hxehex**](https://github.com/hxehex) и участникам проекта [russia-mobile-internet-whitelist](https://github.com/hxehex/russia-mobile-internet-whitelist) за публичный список доменов — hy2-admin лишь использует этот файл как внешний источник данных, без претензий на авторство списка.
+
+Переопределить URL: переменная окружения `GITHUB_WHITELIST_RAW_URL` в `/opt/hy2-admin/.env`.
+
 ---
 
 ## Создатель и ссылки

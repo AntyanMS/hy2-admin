@@ -142,6 +142,19 @@ sudo ss -lunp | grep -E ':443|:24443' || true
 
 Проверьте панель: пользователи, каскад, direct routing — как прежде, с учётом того, что входящий трафик пользователей идёт через sing-box.
 
+### Direct routing: Custom и whitelist с GitHub
+
+На вкладке **Настройки сервера → Direct routing**:
+
+- **Custom** — ваши домены вручную (DNS → IP → правила `direct` в sing-box).
+- **Синхр. с GitHub** — загрузка списка из внешнего репозитория [hxehex/russia-mobile-internet-whitelist](https://github.com/hxehex/russia-mobile-internet-whitelist), файл [`whitelist.txt`](https://github.com/hxehex/russia-mobile-internet-whitelist/blob/main/whitelist.txt). После первой синхронизации появляется отдельная таблица **GitHub whitelist**; опционально — автообновление раз в сутки (кнопка ⟳).
+
+Данные whitelist **не хранятся в репозитории hy2-admin** — только на сервере в `/opt/hy2-admin/data/direct_routing_github_whitelist.json`.
+
+**Благодарность:** проект hy2-admin благодарит [**hxehex**](https://github.com/hxehex) за публичный whitelist; использование файла не означает аффилиации с автором списка.
+
+URL по умолчанию можно заменить: `GITHUB_WHITELIST_RAW_URL` в `/opt/hy2-admin/.env`.
+
 ---
 
 ## 10. Связанные документы

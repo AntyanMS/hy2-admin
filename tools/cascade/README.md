@@ -26,6 +26,14 @@ sudo bash /opt/hy2-admin/tools/cascade/install_master_sync_service.sh
 python3 /opt/hy2-admin/tools/cascade/register_remote_node.py --host <EXIT_HOST> --api-port 9443 --name exit-node-1
 ```
 
+Гибридный exit (свои локальные пользователи, например msgw / SHAMAN-IL):
+
+```bash
+python3 /opt/hy2-admin/tools/cascade/register_remote_node.py --host <HOST> --name msgw-exit --hybrid
+```
+
+На master в `remote_servers.json` для такого узла нужно `"hybrid": true` — тогда sync не удаляет локальных-only пользователей.
+
 Скрипт выведет `REGISTRATION_TOKEN` (base64url, для поля в master-панели).
 
 ## 2) На master зарегистрировать узел

@@ -5,7 +5,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PANEL="${ROOT}/panel"
-VERSION="${1:-0.0.4}"
+VERSION="${1:-0.0.5}"
 OUT_DIR="${ROOT}/dist/${VERSION}"
 IMAGE="${HY2_PANEL_BUILD_IMAGE:-python:3.12-slim-bookworm}"
 

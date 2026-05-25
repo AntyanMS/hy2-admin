@@ -1,5 +1,24 @@
 <!doctype html>
 <html lang="ru">
+{% macro user_traffic_meta(u) -%}
+<span class="summary-meta traffic-meta" data-user-meta="{{ u.username }}">
+  <span class="traffic-seg traffic-dl" title="Скачано">
+    <svg class="traffic-ico traffic-arrow-dl" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 13 3 7h4.5V3h1v4H13z"/></svg>
+    <span class="traffic-val" data-traffic-rx>{{ u.rx_h }}</span>
+  </span>
+  <span class="traffic-sep" aria-hidden="true">|</span>
+  <span class="traffic-seg traffic-ul" title="Отдано">
+    <svg class="traffic-ico traffic-arrow-ul" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 3 13 9H9.5v4h-3V9H3z"/></svg>
+    <span class="traffic-val" data-traffic-tx>{{ u.tx_h }}</span>
+  </span>
+  <span class="traffic-sep" aria-hidden="true">|</span>
+  <span class="traffic-seg traffic-total" title="Всего">
+    <svg class="traffic-ico traffic-ico-disk" viewBox="0 0 16 16" aria-hidden="true"><ellipse cx="8" cy="4.5" rx="5.5" ry="2" fill="none" stroke="currentColor" stroke-width="1.2"/><path fill="none" stroke="currentColor" stroke-width="1.2" d="M2.5 4.5v2.5c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2V4.5"/><path fill="none" stroke="currentColor" stroke-width="1.2" d="M2.5 7v2.5c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2V7"/></svg>
+    <span class="traffic-lbl">Total</span>
+    <span class="traffic-val" data-traffic-total>{{ u.total_h }}</span>
+  </span>
+</span>
+{%- endmacro %}
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -72,6 +91,80 @@
     button:hover { background: var(--btn-hover); }
     .ok { color: var(--ok); }
     .err { color: var(--err); }
+    .toast-stack {
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      z-index: 10000;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-width: min(420px, calc(100vw - 32px));
+      pointer-events: none;
+    }
+    .toast {
+      pointer-events: auto;
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 12px 14px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: rgba(23, 26, 33, 0.96);
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+      animation: toast-in 0.22s ease;
+    }
+    .toast-ok {
+      border-color: rgba(74, 222, 128, 0.45);
+      background: rgba(6, 44, 28, 0.94);
+    }
+    .toast-err {
+      border-color: rgba(248, 113, 113, 0.45);
+      background: rgba(69, 10, 10, 0.94);
+    }
+    .toast-body {
+      flex: 1;
+      min-width: 0;
+      font-size: 0.9rem;
+      line-height: 1.4;
+      color: var(--text);
+    }
+    .toast-title {
+      font-weight: 700;
+      margin-bottom: 2px;
+    }
+    .toast-ok .toast-body { color: #bbf7d0; }
+    .toast-err .toast-body { color: #fecaca; }
+    .toast-close {
+      flex-shrink: 0;
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      margin: -4px -4px 0 0;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: inherit;
+      font-size: 1.25rem;
+      line-height: 1;
+      cursor: pointer;
+      opacity: 0.75;
+    }
+    .toast-close:hover {
+      opacity: 1;
+      background: rgba(255, 255, 255, 0.08);
+    }
+    .toast.toast-out {
+      animation: toast-out 0.2s ease forwards;
+    }
+    @keyframes toast-in {
+      from { opacity: 0; transform: translateX(20px); }
+      to { opacity: 1; transform: translateX(0); }
+    }
+    @keyframes toast-out {
+      from { opacity: 1; transform: translateX(0); }
+      to { opacity: 0; transform: translateX(20px); }
+    }
     .row { margin-top: 8px; }
     .result { border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin: 8px 0; background: var(--bg-soft); }
     code { word-break: break-all; background: var(--code-bg); padding: 2px 4px; border-radius: 4px; }
@@ -84,6 +177,20 @@
     .dr-explicit-row-actions { white-space: nowrap; width: 1%; }
     .dr-explicit-add-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
     .dr-explicit-add-row input[type="text"] { flex: 1 1 200px; max-width: 100%; }
+    details.dr-domains-block { border: 1px solid var(--border); border-radius: 8px; margin: 8px 0 14px; background: var(--bg-soft); }
+    details.dr-domains-block > summary { cursor: pointer; list-style: none; padding: 10px 12px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+    details.dr-domains-block > summary::-webkit-details-marker { display: none; }
+    details.dr-domains-block > summary::after { content: "▸"; margin-left: auto; color: var(--muted); }
+    details.dr-domains-block[open] > summary::after { content: "▾"; }
+    .dr-domains-block-body { padding: 0 12px 12px; }
+    .dr-domains-toolbar { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 8px; margin: 4px 0 12px; }
+    .dr-icon-btn { width: 34px; height: 34px; padding: 0; display: inline-flex; align-items: center; justify-content: center; font-size: 1.1rem; line-height: 1; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-soft); cursor: pointer; color: var(--muted); }
+    .dr-icon-btn:hover { border-color: var(--accent); color: var(--text); }
+    .dr-icon-btn.is-on { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, var(--border)); background: color-mix(in srgb, var(--ok) 8%, var(--bg-soft)); }
+    .dr-icon-btn.is-off { opacity: 0.55; }
+    .dr-whitelist-meta { font-size: 0.82rem; color: var(--muted); margin: 0 0 8px; }
+    .dr-whitelist-pager { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; font-size: 0.85rem; }
+    .dr-whitelist-pager input[type="text"] { flex: 1 1 160px; max-width: 280px; }
     .wl-tz-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 10px 0 8px; font-size: 0.9rem; }
     .wl-tz-row select { padding: 6px 8px; border-radius: 6px; background: var(--bg-soft); color: inherit; border: 1px solid var(--border); min-width: 200px; }
     .danger { background: #b91c1c; }
@@ -182,7 +289,6 @@
     .main-tabs-wrap .main-tabs { margin-bottom: 0; flex-wrap: wrap; }
     .qr-copy { cursor: pointer; transition: transform 0.12s ease; }
     .qr-copy:hover { transform: scale(1.03); }
-    .copy-status { margin: 8px 0; min-height: 18px; color: var(--ok); font-weight: 600; }
     .links-list { width: 100%; min-height: 170px; }
     details.user-card, details.sg-inbound-card { border: 1px solid var(--border); border-radius: 8px; margin: 8px 0; background: var(--bg-soft); }
     details.user-card > summary, details.sg-inbound-card > summary { cursor: pointer; list-style: none; padding: 10px 12px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
@@ -195,6 +301,15 @@
     .summary-select { display: inline-flex; align-items: center; margin-right: 18px; }
     .summary-select input { margin: 0; width: 16px; height: 16px; }
     .summary-meta { font-size: 12px; color: var(--muted); margin-left: 8px; font-weight: 500; }
+    .traffic-meta { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 2px 4px; vertical-align: middle; }
+    .traffic-seg { display: inline-flex; align-items: center; gap: 3px; }
+    .traffic-sep { opacity: 0.45; margin: 0 1px; }
+    .traffic-ico { width: 13px; height: 13px; flex-shrink: 0; vertical-align: middle; }
+    .traffic-arrow-dl { color: #4ade80; width: 11px; height: 11px; }
+    .traffic-arrow-ul { color: #38bdf8; width: 11px; height: 11px; }
+    .traffic-ico-disk { color: #c4b5fd; width: 14px; height: 14px; }
+    .traffic-lbl { font-size: 11px; font-weight: 600; color: #a78bfa; letter-spacing: 0.02em; }
+    .traffic-val { font-variant-numeric: tabular-nums; }
     .conn-badge {
       display: inline-block;
       margin-left: 6px;
@@ -278,6 +393,184 @@
     .server-box { margin-bottom: 10px; }
     .server-grid { display: grid; grid-template-columns: repeat(2, minmax(140px, 1fr)); gap: 8px; }
     .server-grid label { margin-top: 0; font-size: 12px; color: var(--muted); }
+    .cascade-actions-bar {
+      display: flex;
+      justify-content: flex-end;
+      margin: 6px 0 10px;
+      padding: 0;
+      border: none;
+      background: none;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    .cascade-btn-group {
+      --cascade-bevel: 12px;
+      display: inline-flex;
+      flex-wrap: nowrap;
+      align-items: stretch;
+      gap: 10px;
+    }
+    .cascade-btn-group .cascade-seg {
+      margin: 0;
+      padding: 1px;
+      display: block;
+      background: rgba(148, 163, 184, 0.55);
+      transition: background 0.15s ease;
+    }
+    /* \____  левая: скос слева, справа вертикаль | */
+    .cascade-btn-group .cascade-seg-left {
+      clip-path: polygon(0 0, 100% 0, 100% 100%, var(--cascade-bevel) 100%);
+    }
+    /* ____/  правая: слева вертикаль |, скос справа */
+    .cascade-btn-group .cascade-seg-right {
+      clip-path: polygon(0 0, 100% 0, calc(100% - var(--cascade-bevel)) 100%, 0 100%);
+    }
+    .cascade-btn-group .cascade-group-btn {
+      display: block;
+      margin: 0;
+      padding: 8px 16px;
+      border: 0;
+      border-radius: 0;
+      background: #374151;
+      color: #e5e7eb;
+      font-weight: 600;
+      font-size: 14px;
+      line-height: 1.2;
+      white-space: nowrap;
+      cursor: pointer;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+      transition: background 0.15s ease;
+    }
+    .cascade-btn-group .cascade-seg-left .cascade-group-btn {
+      padding-left: calc(16px + var(--cascade-bevel) * 0.35);
+      padding-right: 16px;
+    }
+    .cascade-btn-group .cascade-seg-right .cascade-group-btn {
+      padding-left: 16px;
+      padding-right: calc(16px + var(--cascade-bevel) * 0.35);
+    }
+    .cascade-btn-group .cascade-seg:hover {
+      background: rgba(147, 197, 253, 0.55);
+      z-index: 1;
+      position: relative;
+    }
+    .cascade-btn-group .cascade-seg:hover .cascade-group-btn {
+      background: #4b5563;
+    }
+    .cascade-btn-group .cascade-seg:active .cascade-group-btn {
+      background: var(--btn-hover);
+    }
+    .direct-stat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .direct-stat-card {
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: rgba(15, 23, 42, 0.45);
+      font-size: 0.82rem;
+      line-height: 1.35;
+    }
+    .direct-stat-label {
+      display: block;
+      color: var(--muted);
+      font-size: 0.75rem;
+      margin-bottom: 4px;
+    }
+    .direct-stat-val { font-weight: 700; }
+    .dr-val-ok { color: #4ade80; }
+    .dr-val-warn { color: #fbbf24; }
+    .dr-val-off { color: #94a3b8; }
+    .dr-val-tag { color: #93c5fd; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.8rem; }
+    .dr-val-num { color: #c4b5fd; }
+    .lb-mode-switch { display: flex; flex-direction: column; gap: 6px; width: fit-content; max-width: 100%; }
+    .lb-mode-switch > .muted { margin: 0; }
+    .lb-mode-track {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(72px, auto));
+      position: relative;
+      width: fit-content;
+      padding: 3px;
+      background: var(--input-bg);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      box-sizing: border-box;
+    }
+    .lb-mode-option {
+      position: relative;
+      z-index: 1;
+      display: block;
+      text-align: center;
+      padding: 7px 20px;
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.2;
+      letter-spacing: 0.04em;
+      cursor: pointer;
+      color: var(--muted);
+      transition: color 0.15s ease;
+      user-select: none;
+      margin: 0;
+      white-space: nowrap;
+    }
+    .lb-mode-option input[type="radio"] {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      cursor: pointer;
+    }
+    .lb-mode-option:has(input:checked) { color: #fff; }
+    .lb-mode-slider {
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: calc(50% - 3px);
+      height: calc(100% - 6px);
+      border-radius: 999px;
+      background: linear-gradient(135deg, #2563eb, #1d4ed8);
+      box-shadow: 0 2px 10px rgba(37, 99, 235, 0.35);
+      transition: transform 0.22s ease;
+      pointer-events: none;
+    }
+    .lb-mode-track:has(input[value="urltest"]:checked) .lb-mode-slider { transform: translateX(100%); }
+    details.cascade-connect-card {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin: 0 0 12px;
+      background: var(--bg-soft);
+    }
+    details.cascade-connect-card > summary {
+      cursor: pointer;
+      list-style: none;
+      padding: 10px 12px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px 12px;
+      font-weight: 700;
+    }
+    details.cascade-connect-card > summary::-webkit-details-marker { display: none; }
+    details.cascade-connect-card > summary::after {
+      content: "▸";
+      color: var(--muted);
+      margin-left: auto;
+      font-weight: 400;
+    }
+    details.cascade-connect-card[open] > summary::after { content: "▾"; }
+    .cascade-connect-title { font-size: 1rem; }
+    .cascade-connect-meta { font-size: 0.85rem; font-weight: 500; }
+    .cascade-master-on { color: #4ade80; font-weight: 700; }
+    .cascade-master-off { color: var(--muted); font-weight: 600; }
+    .cascade-stat-num { color: #93c5fd; font-weight: 700; }
+    .cascade-connect-body { border-top: 1px solid var(--border); padding: 10px 12px 12px; }
+    .cascade-connect-actions { display: flex; justify-content: flex-end; margin-top: 4px; }
     .blacklist-list { margin-top: 8px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
     .blacklist-row { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; padding: 8px; border-top: 1px solid var(--border); }
     .blacklist-row:first-child { border-top: 0; }
@@ -304,24 +597,116 @@
     }
     .secondary-btn { background: #374151; }
     .secondary-btn:hover { background: #4b5563; }
-    .backup-options-row {
+    .backup-cards {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: flex-start;
+      width: fit-content;
+      max-width: 100%;
+    }
+    .backup-card {
+      margin: 0;
+      width: 272px;
+      max-width: 100%;
+      flex: 0 0 auto;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: rgba(15, 23, 42, 0.5);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      box-sizing: border-box;
+    }
+    .backup-card-title {
+      margin: 0;
+      font-size: 0.88rem;
+      font-weight: 700;
+      color: #e2e8f0;
+      letter-spacing: 0.01em;
+    }
+    .backup-option-list {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+    .backup-option-item {
+      margin: 0;
+      width: 100%;
+      box-sizing: border-box;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 8px;
+      border: 1px solid rgba(148, 163, 184, 0.22);
+      border-radius: 6px;
+      background: rgba(2, 6, 23, 0.35);
+      font-weight: 600;
+      font-size: 0.8rem;
+      cursor: pointer;
+    }
+    .backup-option-item:hover {
+      border-color: rgba(147, 197, 253, 0.45);
+      background: rgba(30, 41, 59, 0.55);
+    }
+    .backup-option-item input {
+      width: 14px;
+      height: 14px;
+      margin: 0;
+      accent-color: #60a5fa;
+      flex-shrink: 0;
+    }
+    .backup-file-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .backup-file-row {
       display: flex;
       flex-wrap: wrap;
       align-items: center;
-      gap: 8px 14px;
-      margin: 0 0 8px;
+      gap: 8px;
     }
-    .backup-options-row label {
-      margin: 0;
+    .backup-file-trigger {
+      position: relative;
       display: inline-flex;
       align-items: center;
-      gap: 6px;
+      justify-content: center;
+      margin: 0;
+      padding: 5px 10px;
+      font-size: 0.82rem;
+      cursor: pointer;
+      overflow: hidden;
+    }
+    .backup-file-trigger input[type="file"] {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+      width: 100%;
+      height: 100%;
+    }
+    .backup-file-status {
+      font-size: 0.78rem;
+      word-break: break-all;
+    }
+    .backup-file-status.has-file {
+      color: #93c5fd;
       font-weight: 600;
     }
-    .backup-sep {
-      color: #93c5fd;
-      font-weight: 700;
-      user-select: none;
+    .backup-card-actions {
+      margin-top: 0;
+      padding-top: 0;
+    }
+    .backup-card-actions .actions {
+      margin: 0;
+      display: flex;
+    }
+    .backup-card-actions .actions button {
+      min-width: 120px;
+      padding: 6px 16px;
+      font-size: 0.85rem;
     }
     .emergency-stop-btn {
       background: linear-gradient(180deg, #fde047, #facc15);
@@ -427,6 +812,68 @@
 </head>
 <body{% if ui_shell_only %} class="ui-shell-only"{% endif %}>
   <canvas id="bg-canvas" aria-hidden="true"></canvas>
+  {% if not ui_shell_only %}
+  <div id="toast-stack" class="toast-stack" aria-live="polite" aria-relevant="additions"></div>
+  <script>
+  (function () {
+    var stack = document.getElementById("toast-stack");
+    if (!stack) return;
+    var DEFAULT_MS = { ok: 8000, err: 12000 };
+
+    function dismissToast(el) {
+      if (!el || el.classList.contains("toast-out")) return;
+      if (el._toastTimer) clearTimeout(el._toastTimer);
+      el.classList.add("toast-out");
+      el.addEventListener("animationend", function () {
+        if (el.parentNode) el.parentNode.removeChild(el);
+      }, { once: true });
+    }
+
+    window.showPanelToast = function (message, type, opts) {
+      if (!message) return null;
+      type = type || "ok";
+      opts = opts || {};
+      var ms = opts.duration != null ? opts.duration : (DEFAULT_MS[type] || 8000);
+      var el = document.createElement("div");
+      el.className = "toast toast-" + type;
+      el.setAttribute("role", type === "err" ? "alert" : "status");
+
+      var body = document.createElement("div");
+      body.className = "toast-body";
+      if (opts.title) {
+        var title = document.createElement("div");
+        title.className = "toast-title";
+        title.textContent = opts.title;
+        body.appendChild(title);
+      }
+      var msg = document.createElement("div");
+      msg.textContent = String(message);
+      body.appendChild(msg);
+
+      var closeBtn = document.createElement("button");
+      closeBtn.type = "button";
+      closeBtn.className = "toast-close";
+      closeBtn.setAttribute("aria-label", "Закрыть");
+      closeBtn.textContent = "\u00d7";
+      closeBtn.addEventListener("click", function () { dismissToast(el); });
+
+      el.appendChild(body);
+      el.appendChild(closeBtn);
+      stack.appendChild(el);
+
+      if (ms > 0) {
+        el._toastTimer = setTimeout(function () { dismissToast(el); }, ms);
+      }
+      return el;
+    };
+
+    var flashOk = {{ ok_message | tojson }};
+    var flashErr = {{ error_message | tojson }};
+    if (flashOk) window.showPanelToast(flashOk, "ok");
+    if (flashErr) window.showPanelToast(flashErr, "err", { title: "Ошибка" });
+  })();
+  </script>
+  {% endif %}
   <div class="topbar">
     <h1><a href="{{ url_for('hy2.index') }}" class="brand-link">Hysteria2 Clients Admin</a></h1>
     <div style="display:flex; gap:8px; align-items:center;">
@@ -435,12 +882,8 @@
       </form>
     </div>
   </div>
+
   {% if not ui_shell_only %}
-  <p id="copy-status" class="copy-status"></p>
-
-  {% if ok_message %}<p class="ok"><strong>{{ ok_message }}</strong></p>{% endif %}
-  {% if error_message %}<p class="err"><strong>Ошибка:</strong> {{ error_message }}</p>{% endif %}
-
   <div class="main-tabs-wrap">
     <div class="tabs main-tabs">
       <button type="button" id="tab-main-dashboard-btn" class="tab-btn active">Панель</button>
@@ -599,7 +1042,7 @@
     {% if active_users %}
       {% for u in active_users %}
         <details class="user-card" data-username="{{ u.username }}" data-total="{{ u.total }}" data-online="{{ 1 if u.is_online else 0 }}" data-disabled="0">
-          <summary><span class="summary-name">{{ u.username }}{% if u.is_online %}<span class="status-dot online" data-user-dot="{{ u.username }}" title="Онлайн: {{ u.online_count }}"></span>{% else %}<span class="status-dot offline" data-user-dot="{{ u.username }}" title="Оффлайн"></span>{% endif %}{% if u.online_count and u.online_count > 1 %}<span class="conn-badge" data-user-online-count="{{ u.username }}" title="Одновременных подключений">x{{ u.online_count }}</span>{% else %}<span class="conn-badge" data-user-online-count="{{ u.username }}" style="display:none;"></span>{% endif %}<span class="summary-meta" data-user-meta="{{ u.username }}">↓ {{ u.rx_h }} | ↑ {{ u.tx_h }} | Σ {{ u.total_h }}</span></span><label class="summary-select" title="Выбрать для удаления"><input form="active-delete-form" type="checkbox" name="selected_users" value="{{ u.username }}"></label></summary>
+          <summary><span class="summary-name">{{ u.username }}{% if u.is_online %}<span class="status-dot online" data-user-dot="{{ u.username }}" title="Онлайн: {{ u.online_count }}"></span>{% else %}<span class="status-dot offline" data-user-dot="{{ u.username }}" title="Оффлайн"></span>{% endif %}{% if u.online_count and u.online_count > 1 %}<span class="conn-badge" data-user-online-count="{{ u.username }}" title="Одновременных подключений">x{{ u.online_count }}</span>{% else %}<span class="conn-badge" data-user-online-count="{{ u.username }}" style="display:none;"></span>{% endif %}{{ user_traffic_meta(u) }}</span><label class="summary-select" title="Выбрать для удаления"><input form="active-delete-form" type="checkbox" name="selected_users" value="{{ u.username }}"></label></summary>
           <div class="user-body">
             <form method="post" action="{{ url_for('hy2.users_toggle_handler') }}" class="inline">
               <input type="hidden" name="username" value="{{ u.username }}">
@@ -695,7 +1138,7 @@
     {% if disabled_users %}
       {% for u in disabled_users %}
         <details class="user-card" data-username="{{ u.username }}" data-total="{{ u.total }}" data-online="0" data-disabled="1">
-          <summary>{{ u.username }}<span class="status-dot disabled" data-user-dot="{{ u.username }}" title="Клиент выключен"></span><span class="conn-badge" data-user-online-count="{{ u.username }}" style="display:none;"></span><span class="summary-meta" data-user-meta="{{ u.username }}">↓ {{ u.rx_h }} | ↑ {{ u.tx_h }} | Σ {{ u.total_h }}</span></summary>
+          <summary>{{ u.username }}<span class="status-dot disabled" data-user-dot="{{ u.username }}" title="Клиент выключен"></span><span class="conn-badge" data-user-online-count="{{ u.username }}" style="display:none;"></span>{{ user_traffic_meta(u) }}</summary>
           <div class="user-body">
             <p class="muted">Отключен: {{ u.disabled_at or 'неизвестно' }}</p>
             <form method="post" action="{{ url_for('hy2.users_toggle_handler') }}" class="inline">
@@ -823,63 +1266,57 @@
       </form>
 
       <hr style="border-color:#374151; opacity:.5; margin:14px 0;">
-      <h3 style="margin:0 0 8px; font-size:1rem;">Каскад → sing-box</h3>
-      <p class="muted" style="margin:0 0 8px; font-size:0.8rem; line-height:1.35;">
-        Режим выхода в интернет (между exit-узлами). После смены нажмите «Применить». Тег default outbound в Direct routing: <code>{{ cascade_state.exit_selector_tag }}</code>.
-      </p>
+      <h3 style="margin:0 0 10px; font-size:1rem;">Каскадный режим</h3>
       <form method="post" action="{{ url_for('hy2.server_cascade_apply_singbox_handler') }}" style="display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end; margin-bottom:12px;">
-        <div>
-          <label class="muted" style="display:block; font-size:0.8rem; margin-bottom:4px;">Режим</label>
-          <select name="singbox_lb_mode" style="min-width:260px;">
-            <option value="single" {% if cascade_state.singbox_lb_mode == 'single' %}selected{% endif %}>Один exit (single / singleurl)</option>
-            <option value="urltest" {% if cascade_state.singbox_lb_mode == 'urltest' %}selected{% endif %}>По задержке (urltest)</option>
-          </select>
-        </div>
-        <button type="submit">Применить к sing-box</button>
-      </form>
-      <p class="muted" style="margin:0 0 14px; font-size:0.75rem; line-height:1.35;">
-        <strong>single</strong> — только первый доступный exit с полным hop; outbound сразу с тегом <code>{{ cascade_state.exit_selector_tag }}</code>, без балансировки.
-        <strong>urltest</strong> — выбор узла по минимальной задержке к probe среди exit.
-      </p>
-
-      <hr style="border-color:#374151; opacity:.5; margin:14px 0;">
-      <h3 style="margin:0 0 8px; font-size:1rem;">Каскад: удалённые серверы</h3>
-      <p class="muted" style="margin:0 0 10px; font-size:0.85rem;">
-        Master: {% if cascade_state.master_enabled %}<strong>включен</strong>{% else %}<strong>выключен</strong>{% endif %},
-        узлов: {{ cascade_state.servers_count }}, активных exit: {{ cascade_state.exit_enabled_count }}.
-      </p>
-      <form method="post" action="{{ url_for('hy2.server_cascade_register_handler') }}" style="display:flex; flex-direction:column; gap:8px; margin-bottom:10px;">
-        <label>Registration token удалённого узла</label>
-        <textarea name="cascade_token" rows="3" placeholder="Вставьте token из register_remote_node.py">{{ defaults.cascade_token or '' }}</textarea>
-        <div class="server-grid">
-          <div>
-            <label>Имя (опционально)</label>
-            <input name="cascade_name" value="{{ defaults.cascade_name or '' }}" placeholder="например exit-node-1" maxlength="64">
-          </div>
-          <div>
-            <label style="display:flex; align-items:center; gap:8px; margin-top:30px;">
-              <input type="checkbox" name="cascade_mark_exit" value="1">
-              Сделать exit-узлом по умолчанию
+        <div class="lb-mode-switch">
+          <div class="lb-mode-track" role="radiogroup" aria-label="Каскадный режим">
+            <span class="lb-mode-slider" aria-hidden="true"></span>
+            <label class="lb-mode-option" title="single / singleurl">
+              <input type="radio" name="singbox_lb_mode" value="single" {% if cascade_state.singbox_lb_mode == 'single' %}checked{% endif %}>
+              Solo
+            </label>
+            <label class="lb-mode-option" title="urltest">
+              <input type="radio" name="singbox_lb_mode" value="urltest" {% if cascade_state.singbox_lb_mode != 'single' %}checked{% endif %}>
+              Multi
             </label>
           </div>
         </div>
-        <div class="actions" style="display:flex; gap:8px; flex-wrap:wrap;">
-          <button type="submit">Добавить сервер</button>
+        <button type="submit">Применить к sing-box</button>
+      </form>
+      <hr style="border-color:#374151; opacity:.5; margin:14px 0;">
+      <details class="cascade-connect-card">
+        <summary>
+          <span class="cascade-connect-title">Подключение внешнего сервера</span>
+          <span class="cascade-connect-meta muted">
+            Master:
+            {% if cascade_state.master_enabled %}<span class="cascade-master-on">включен</span>{% else %}<span class="cascade-master-off">выключен</span>{% endif %},
+            узлов: <span class="cascade-stat-num">{{ cascade_state.servers_count }}</span>,
+            активных exit: <span class="cascade-stat-num">{{ cascade_state.exit_enabled_count }}</span>.
+          </span>
+        </summary>
+        <div class="cascade-connect-body">
+          <form id="cascade-register-form" method="post" action="{{ url_for('hy2.server_cascade_register_handler') }}" style="display:flex; flex-direction:column; gap:8px; margin:0;">
+            <label>Registration token удалённого узла</label>
+            <textarea name="cascade_token" rows="3" placeholder="Вставьте token из register_remote_node.py">{{ defaults.cascade_token or '' }}</textarea>
+            <div class="server-grid">
+              <div>
+                <label>Имя (опционально)</label>
+                <input name="cascade_name" value="{{ defaults.cascade_name or '' }}" placeholder="например exit-node-1" maxlength="64">
+              </div>
+              <div>
+                <label style="display:flex; align-items:center; gap:8px; margin-top:30px;">
+                  <input type="checkbox" name="cascade_mark_exit" value="1">
+                  Сделать exit-узлом по умолчанию
+                </label>
+              </div>
+            </div>
+            <div class="cascade-connect-actions">
+              <button type="submit">Добавить сервер</button>
+            </div>
+          </form>
         </div>
-      </form>
-      <form method="post" action="{{ url_for('hy2.server_cascade_sync_now_handler') }}" style="margin:0 0 10px;">
-        <button type="submit" class="secondary-btn">Синхронизация сейчас</button>
-      </form>
-      <form method="post" action="{{ url_for('hy2.server_cascade_pool_all_exits_handler') }}" style="margin:0 0 10px;">
-        <button type="submit" class="secondary-btn">Все активные узлы в пул exit</button>
-      </form>
-      <p class="muted" style="margin:0 0 10px; font-size:0.75rem; line-height:1.35;">
-        <strong>Пул exit:</strong> помечает <code>cascade_exit</code> для всех узлов со статусом enabled и ролью из переменной окружения
-        <code>CASCADE_EXIT_POOL_ROLES</code> (сейчас: {% for r in cascade_state.cascade_exit_pool_roles %}{{ r }}{% if not loop.last %}, {% endif %}{% endfor %}).
-        У выключенных узлов с этими ролями флаг снимается. После сохранения выполняется синхронизация каскада и попытка записать outbounds в sing-box
-        (при ошибке файла конфигурации воспользуйтесь «Применить к sing-box» выше).
-      </p>
-      <p class="muted" style="margin:0 0 10px; font-size:0.75rem;">Режим каскада sing-box задаётся выше в «Общие» → «Каскад → sing-box».</p>
+      </details>
+      <h3 style="margin:0 0 8px; font-size:1rem;">Каскад: удалённые серверы</h3>
       {% if cascade_state.servers %}
       <div style="overflow:auto;">
         <table style="width:100%; border-collapse:collapse; font-size:0.9rem;">
@@ -978,6 +1415,16 @@
       {% else %}
       <p class="muted">Удалённые узлы ещё не добавлены.</p>
       {% endif %}
+      <div class="cascade-actions-bar">
+        <div class="cascade-btn-group">
+          <form class="cascade-seg cascade-seg-left" method="post" action="{{ url_for('hy2.server_cascade_sync_now_handler') }}">
+            <button type="submit" class="cascade-group-btn">Синхронизация сейчас</button>
+          </form>
+          <form class="cascade-seg cascade-seg-right" method="post" action="{{ url_for('hy2.server_cascade_pool_all_exits_handler') }}">
+            <button type="submit" class="cascade-group-btn">Все активные узлы в пул exit</button>
+          </form>
+        </div>
+      </div>
 
       </div>
 
@@ -986,33 +1433,80 @@
       {% if direct_state.load_error %}
       <p class="muted">{{ direct_state.load_error }} · {{ direct_state.config_path }}</p>
       {% else %}
-      <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:8px; margin-bottom:10px;">
-        <div class="muted">default outbound: <strong>{% if direct_state.has_default_outbound %}{{ direct_state.default_outbound_tag or 'да' }}{% else %}нет{% endif %}</strong></div>
-        <div class="muted">geoip-ru -> direct: <strong>{% if direct_state.has_geoip_ru_direct %}да{% else %}нет{% endif %}</strong></div>
-        <div class="muted">.ru/.рф/.su -> direct: <strong>{% if direct_state.has_ru_suffix_direct %}да{% else %}нет{% endif %}</strong></div>
-        <div class="muted">правил direct/default: <strong>{{ direct_state.direct_rule_count }}/{{ direct_state.default_rule_count }}</strong></div>
+      <div class="direct-stat-grid">
+        <div class="direct-stat-card">
+          <span class="direct-stat-label">default outbound</span>
+          {% if direct_state.has_default_outbound %}
+          <strong class="direct-stat-val dr-val-tag">{{ direct_state.default_outbound_tag or 'да' }}</strong>
+          {% else %}
+          <strong class="direct-stat-val dr-val-warn">нет</strong>
+          {% endif %}
+        </div>
+        <div class="direct-stat-card">
+          <span class="direct-stat-label">.ru / .рф / .su → direct</span>
+          {% if direct_state.has_ru_suffix_direct %}
+          <strong class="direct-stat-val dr-val-ok">да</strong>
+          {% else %}
+          <strong class="direct-stat-val dr-val-warn">нет</strong>
+          {% endif %}
+        </div>
+        <div class="direct-stat-card">
+          <span class="direct-stat-label">правил direct / default</span>
+          <strong class="direct-stat-val"><span class="dr-val-num">{{ direct_state.direct_rule_count }}</span><span class="dr-val-off"> / </span><span class="dr-val-tag">{{ direct_state.default_rule_count }}</span></strong>
+        </div>
       </div>
-      <p class="muted" style="margin:0 0 10px; font-size:0.8rem;">Источник: <code>{{ direct_state.config_path }}</code></p>
       {% endif %}
       <form method="post" action="{{ url_for('hy2.server_direct_routing_handler') }}" id="direct-routing-form">
-        {% set _dej = defaults.direct_explicit_domains_json %}
-        <input type="hidden" name="direct_explicit_domains_json" id="direct-explicit-domains-json" value="{% if _dej %}{{ _dej | e }}{% else %}{{ direct_state.explicit_domains_list | default([], true) | tojson | e }}{% endif %}">
+        {% set _dej = (defaults.direct_explicit_domains_json or '') | trim %}
+        <input type="hidden" name="direct_explicit_domains_json" id="direct-explicit-domains-json" value="{% if _dej and _dej != '[]' %}{{ _dej | e }}{% else %}{{ direct_state.explicit_domains_list | default([], true) | tojson | e }}{% endif %}">
         <label>Явные домены → direct (и IP из DNS → direct при сохранении)</label>
-        <p class="muted" style="margin:4px 0 8px; font-size:0.8rem; line-height:1.35;">После нажатия «Сохранить» панель на сервере выполняет DNS (A/AAAA), как <code>nslookup</code>, и добавляет полученные адреса в sing-box отдельным правилом <code>ip_cidr</code> → <code>direct</code> (например <code>/32</code>, <code>/128</code>).</p>
-        <div class="dr-explicit-add-row">
-          <input type="text" id="direct-explicit-add-input" placeholder="один или несколько: пробел, запятая, ; (например ya.ru 2ip.ru)" autocomplete="off" autocapitalize="off">
-          <button type="button" id="direct-explicit-add-btn" class="secondary-btn">Добавить</button>
+        <details class="dr-domains-block" id="direct-custom-block">
+          <summary>Custom (<span id="direct-custom-count">{{ direct_state.explicit_domains_list | default([], true) | length }}</span>)</summary>
+          <div class="dr-domains-block-body">
+            <div class="dr-explicit-add-row">
+              <input type="text" id="direct-explicit-add-input" placeholder="один или несколько: пробел, запятая, ; (например ya.ru 2ip.ru)" autocomplete="off" autocapitalize="off">
+              <button type="button" id="direct-explicit-add-btn" class="secondary-btn">Добавить</button>
+            </div>
+            <table class="dr-explicit-table" aria-label="Custom домены direct">
+              <thead>
+                <tr>
+                  <th>Домен</th>
+                  <th>IP (CIDR)</th>
+                  <th class="dr-explicit-row-actions"></th>
+                </tr>
+              </thead>
+              <tbody id="direct-explicit-tbody"></tbody>
+            </table>
+          </div>
+        </details>
+        <details class="dr-domains-block" id="direct-whitelist-block" style="display:{% if direct_state.whitelist_synced %}block{% else %}none{% endif %};">
+          <summary>GitHub whitelist (<span id="whitelist-summary-domains">{{ direct_state.whitelist_domains_count }}</span> доменов, <span id="whitelist-summary-ips">{{ direct_state.whitelist_ip_count }}</span> IP)</summary>
+          <div class="dr-domains-block-body">
+            <p class="dr-whitelist-meta" id="whitelist-meta-line">
+              {% if direct_state.whitelist_last_sync_at %}Последняя синхронизация: {{ direct_state.whitelist_last_sync_at }}{% else %}Ожидает первой синхронизации{% endif %}
+              {% if direct_state.whitelist_sync_status == 'running' %} · <strong>идёт синхронизация…</strong>{% endif %}
+            </p>
+            <div class="dr-whitelist-pager">
+              <input type="text" id="whitelist-filter-input" placeholder="Фильтр по домену…" autocomplete="off" autocapitalize="off">
+              <button type="button" id="whitelist-prev-btn" class="secondary-btn">←</button>
+              <span id="whitelist-page-label">1 / 1</span>
+              <button type="button" id="whitelist-next-btn" class="secondary-btn">→</button>
+            </div>
+            <table class="dr-explicit-table" aria-label="GitHub whitelist direct">
+              <thead>
+                <tr>
+                  <th>Домен</th>
+                  <th>IP (CIDR)</th>
+                </tr>
+              </thead>
+              <tbody id="direct-whitelist-tbody"></tbody>
+            </table>
+          </div>
+        </details>
+        <div class="dr-domains-toolbar">
+          <button type="button" id="whitelist-auto-btn" class="dr-icon-btn {% if direct_state.whitelist_auto_sync_enabled %}is-on{% else %}is-off{% endif %}" style="display:{% if direct_state.whitelist_synced %}inline-flex{% else %}none{% endif %};" data-auto-enabled="{% if direct_state.whitelist_auto_sync_enabled %}1{% else %}0{% endif %}" data-auto-url="{{ url_for('hy2.server_direct_routing_whitelist_auto_handler') }}" title="Автообновление whitelist раз в сутки (GitHub). Включено — список подтягивается автоматически; выключено — только вручную." aria-pressed="{% if direct_state.whitelist_auto_sync_enabled %}true{% else %}false{% endif %}">⟳</button>
+          <button type="button" id="whitelist-sync-btn" class="secondary-btn" data-sync-url="{{ url_for('hy2.server_direct_routing_whitelist_sync_handler') }}" title="Синхронизация файла с GitHub (hxehex/russia-mobile-internet-whitelist): https://github.com/hxehex/russia-mobile-internet-whitelist/blob/main/whitelist.txt">Синхр. с GitHub</button>
         </div>
-        <table class="dr-explicit-table" aria-label="Явные домены direct">
-          <thead>
-            <tr>
-              <th>Домен</th>
-              <th>IP (CIDR)</th>
-              <th class="dr-explicit-row-actions"></th>
-            </tr>
-          </thead>
-          <tbody id="direct-explicit-tbody"></tbody>
-        </table>
         <label>Суффиксы доменов -> direct (по одному в строке, с точкой)</label>
         <textarea name="direct_ru_suffixes" rows="4" placeholder=".ru&#10;.xn--p1ai&#10;.su">{{ defaults.direct_ru_suffixes or direct_state.ru_suffixes_text or '' }}</textarea>
         {% set direct_geoip_val = defaults.direct_geoip_ru if defaults.direct_geoip_ru else ('1' if direct_state.enable_geoip_ru else '') %}
@@ -1039,12 +1533,6 @@
           <option value="{{ tag }}" {% if tag == direct_default_tag_val %}selected{% endif %}>{{ tag }}</option>
           {% endfor %}
         </select>
-        <p class="muted" style="margin:8px 0 12px; font-size:0.8rem; line-height:1.35;">
-          Если нужен каскад для «всего остального», выберите тег (например <code>cascade-exit-auto</code>) и сохраните.
-          Галочка «Включить default outbound» дублирует это: без финального правила в конфиге sing-box остальной трафик часто уходит в <strong>direct</strong> (виден IP шлюза), а не в каскад.
-          <br>
-          Для правил по домену (в т.ч. <code>.ru</code>) важно, чтобы в <code>route.rules</code> сначала шли действия <code>sniff</code>/<code>resolve</code> — панель при сохранении выносит их в начало; иначе SNI неизвестен и суффиксы не срабатывают (весь трафик уходит в каскад).
-        </p>
         <div class="actions"><button type="submit">Сохранить direct routing правила</button></div>
       </form>
       </div>
@@ -1111,41 +1599,59 @@
         </div>
 
         <div id="sec-panel-backup" class="tab-panel security-nested-panel">
-          <p class="muted" style="margin:0 0 10px; font-size:0.9rem;">Выгрузка и загрузка данных сервера: пользователи, лимиты и настройки сервера.</p>
-          <form method="post" action="{{ url_for('hy2.server_backup_export_handler') }}" style="margin:0 0 12px;">
-            <label style="margin:0 0 6px;">Выгрузить с сервера</label>
-            <div class="backup-options-row">
-              <label><input type="checkbox" name="backup_include_users_limits" value="1" {% if defaults.backup_include_users_limits != '' %}checked{% endif %}> Пользователи и лимиты</label>
-              <span class="backup-sep">|</span>
-              <label><input type="checkbox" name="backup_include_server_settings" value="1" {% if defaults.backup_include_server_settings != '' %}checked{% endif %}> Настройки сервера</label>
-            </div>
-            <div class="actions"><button type="submit">Скачать</button></div>
-          </form>
-
-          <form method="post" action="{{ url_for('hy2.server_backup_import_handler') }}" enctype="multipart/form-data" onsubmit="return confirm('Применить данные из backup на текущем сервере?');">
-            <label style="margin:0 0 6px;">Загрузить на сервер</label>
-            <div class="server-grid">
-              <div>
-                <input type="file" name="backup_file" accept=".json,application/json" required>
+          <p class="muted" style="margin:0 0 8px; font-size:0.82rem;">Выгрузка и загрузка данных сервера: пользователи, лимиты и настройки сервера.</p>
+          <div class="backup-cards">
+            <form method="post" action="{{ url_for('hy2.server_backup_export_handler') }}" class="backup-card backup-card-export">
+              <h4 class="backup-card-title">Выгрузить с сервера</h4>
+              <div class="backup-option-list">
+                <label class="backup-option-item">
+                  <input type="checkbox" name="backup_include_users_limits" value="1" {% if defaults.backup_include_users_limits != '' %}checked{% endif %}>
+                  Пользователи и лимиты
+                </label>
+                <label class="backup-option-item">
+                  <input type="checkbox" name="backup_include_server_settings" value="1" {% if defaults.backup_include_server_settings != '' %}checked{% endif %}>
+                  Настройки сервера
+                </label>
               </div>
-            </div>
-            <div class="backup-options-row" style="margin-top:8px;">
-              <label><input type="checkbox" name="restore_include_users_limits" value="1" {% if defaults.restore_include_users_limits != '' %}checked{% endif %}> Пользователи и лимиты</label>
-              <span class="backup-sep">|</span>
-              <label><input type="checkbox" name="restore_include_server_settings" value="1" {% if defaults.restore_include_server_settings != '' %}checked{% endif %}> Настройки сервера</label>
-            </div>
-            <div class="actions"><button type="submit" class="danger-btn">Загрузить</button></div>
-          </form>
+              <div class="backup-card-actions">
+                <div class="actions"><button type="submit">Скачать</button></div>
+              </div>
+            </form>
+
+            <form method="post" action="{{ url_for('hy2.server_backup_import_handler') }}" class="backup-card backup-card-import" enctype="multipart/form-data" onsubmit="return confirm('Применить данные из backup на текущем сервере?');">
+              <h4 class="backup-card-title">Загрузить на сервер</h4>
+              <div class="backup-file-wrap">
+                <div class="backup-file-row">
+                  <label class="backup-file-trigger secondary-btn">
+                    Выбрать файл
+                    <input type="file" name="backup_file" id="backup-import-file" accept=".json,application/json" required>
+                  </label>
+                  <span class="backup-file-status" id="backup-file-status">Файл не выбран</span>
+                </div>
+              </div>
+              <div class="backup-option-list">
+                <label class="backup-option-item">
+                  <input type="checkbox" name="restore_include_users_limits" value="1" {% if defaults.restore_include_users_limits != '' %}checked{% endif %}>
+                  Пользователи и лимиты
+                </label>
+                <label class="backup-option-item">
+                  <input type="checkbox" name="restore_include_server_settings" value="1" {% if defaults.restore_include_server_settings != '' %}checked{% endif %}>
+                  Настройки сервера
+                </label>
+              </div>
+              <div class="backup-card-actions">
+                <div class="actions"><button type="submit" class="danger-btn">Загрузить</button></div>
+              </div>
+            </form>
+          </div>
         </div>
 
         <div id="sec-panel-stub" class="tab-panel security-nested-panel">
-          <p class="muted" style="margin:0 0 10px; font-size:0.9rem;">Файл: <code>{{ https_stub.path }}</code>{% if https_stub.read_error %}<br><span style="color:#fca5a5;">{{ https_stub.read_error }}</span>{% endif %}<br>По умолчанию это путь <code>/var/www/hy2-site/index.html</code> (корневой файл для <code>location /</code> в nginx). Иначе nginx отдаёт другой файл — страница не изменится. Переопределение: <code>HTTPS_ROOT_STUB_HTML_PATH</code> в <code>/opt/hy2-admin/.env</code>.</p>
           <div class="stub-toolbar-row" style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:10px;">
             <form id="form-https-stub-apply" method="post" action="{{ url_for('hy2.server_https_stub_apply_handler') }}" style="margin:0; display:flex; flex-direction:column; gap:8px; flex:1; min-width:min(100%, 320px);">
               <div class="actions" style="display:flex; flex-wrap:wrap; gap:8px; margin:0;">
                 <button type="submit">Применить</button>
               </div>
-              <p class="muted" style="font-size:0.8rem; margin:0 0 4px;">Обычное текстовое поле без автодополнения; подсветка — слой под текстом. Вставляйте <strong>целый</strong> файл от <code>&lt;!doctype html&gt;</code> до <code>&lt;/html&gt;</code>.</p>
               <div class="stub-editor-wrap" id="stub-editor-wrap">
                 <pre class="stub-hl-layer" id="stub-hl-layer" aria-hidden="true"></pre>
                 <textarea id="stub-html-field" name="https_stub_html" spellcheck="false" autocorrect="off" autocapitalize="off" autocomplete="off" class="stub-html-input">{{ https_stub.text }}</textarea>
@@ -1407,7 +1913,6 @@
       const tabDisabledBtn = document.getElementById("tab-disabled-btn");
       const tabActive = document.getElementById("tab-active");
       const tabDisabled = document.getElementById("tab-disabled");
-      const copyStatus = document.getElementById("copy-status");
       const searchInput = document.getElementById("user-search");
       const sortSelect = document.getElementById("user-sort");
       const onlineOnlyInput = document.getElementById("user-online-only");
@@ -1417,6 +1922,15 @@
       const statOnline = document.getElementById("stat-online");
       const statRateDownload = document.getElementById("stat-rate-download");
       const statRateUpload = document.getElementById("stat-rate-upload");
+      function updateUserTrafficMeta(el, info) {
+        if (!el) return;
+        const rx = el.querySelector("[data-traffic-rx]");
+        const tx = el.querySelector("[data-traffic-tx]");
+        const total = el.querySelector("[data-traffic-total]");
+        if (rx) rx.textContent = info.rx_h || "0 B";
+        if (tx) tx.textContent = info.tx_h || "0 B";
+        if (total) total.textContent = info.total_h || "0 B";
+      }
       const gatewayTrafficNote = document.getElementById("gateway-traffic-note");
       const tabMainDashboardBtn = document.getElementById("tab-main-dashboard-btn");
       const tabMainUsersBtn = document.getElementById("tab-main-users-btn");
@@ -1811,12 +2325,12 @@
           if (!url) return;
           try {
             await copyText(url);
-            if (copyStatus) {
-              copyStatus.textContent = "URL скопирован в буфер обмена";
+            if (typeof window.showPanelToast === "function") {
+              window.showPanelToast("URL скопирован в буфер обмена", "ok", { duration: 4000 });
             }
           } catch (e) {
-            if (copyStatus) {
-              copyStatus.textContent = "Не удалось скопировать URL";
+            if (typeof window.showPanelToast === "function") {
+              window.showPanelToast("Не удалось скопировать URL", "err", { duration: 5000 });
             }
           }
         });
@@ -1908,7 +2422,7 @@
               }
             }
             if (metaByUser[u]) {
-              metaByUser[u].textContent = "↓ " + (info.rx_h || "0 B") + " | ↑ " + (info.tx_h || "0 B") + " | Σ " + (info.total_h || "0 B");
+              updateUserTrafficMeta(metaByUser[u], info);
             }
             if (limitTextByUser[u] && info.traffic_limit_bytes > 0) {
               limitTextByUser[u].textContent = "Остаток: " + (info.traffic_remaining_h || "0 B");
@@ -2067,9 +2581,14 @@
       if (!hidden || !tbody || !addInput || !addBtn) return;
       var initialDetail = {{ direct_state.explicit_domains_detail | default([], true) | tojson }};
       var detailMap = {};
+      function explicitDomainKey(row) {
+        if (!row) return "";
+        return String(row.domain || row.host || "").trim().toLowerCase().replace(/\.+$/, "");
+      }
       (initialDetail || []).forEach(function (row) {
-        if (row && row.domain) {
-          detailMap[row.domain] = { cidrs: row.cidrs || [], error: row.error || "" };
+        var dom = explicitDomainKey(row);
+        if (dom) {
+          detailMap[dom] = { cidrs: row.cidrs || [], error: row.error || "" };
         }
       });
       var apiUrl = "{{ url_for('hy2.api_direct_routing_explicit_state_handler') }}";
@@ -2086,8 +2605,9 @@
             hidden.value = JSON.stringify(data.explicit_domains_list);
             detailMap = {};
             (data.explicit_domains_detail || []).forEach(function (row) {
-              if (row && row.domain) {
-                detailMap[row.domain] = { cidrs: row.cidrs || [], error: row.error || "" };
+              var dom = explicitDomainKey(row);
+              if (dom) {
+                detailMap[dom] = { cidrs: row.cidrs || [], error: row.error || "" };
               }
             });
             renderExplicitTable();
@@ -2136,6 +2656,8 @@
       function renderExplicitTable() {
         var domains = dedupe(parseDomainsFromHidden());
         hidden.value = JSON.stringify(domains);
+        var countEl = document.getElementById("direct-custom-count");
+        if (countEl) countEl.textContent = String(domains.length);
         tbody.textContent = "";
         domains.forEach(function (d) {
           var tr = document.createElement("tr");
@@ -2234,6 +2756,201 @@
       });
       refreshExplicitFromServer();
       renderExplicitTable();
+    })();
+    </script>
+    <script>
+    (function () {
+      var PAGE_SIZE = 50;
+      var whitelistApiUrl = "{{ url_for('hy2.api_direct_routing_whitelist_state_handler') }}";
+      var tbody = document.getElementById("direct-whitelist-tbody");
+      var block = document.getElementById("direct-whitelist-block");
+      var syncBtn = document.getElementById("whitelist-sync-btn");
+      var autoBtn = document.getElementById("whitelist-auto-btn");
+      if (!syncBtn) return;
+
+      var allRows = [];
+      var filteredRows = [];
+      var page = 0;
+      var pollTimer = null;
+
+      function postPanelForm(action, fields) {
+        var f = document.createElement("form");
+        f.method = "post";
+        f.action = action;
+        f.style.display = "none";
+        Object.keys(fields || {}).forEach(function (k) {
+          var inp = document.createElement("input");
+          inp.type = "hidden";
+          inp.name = k;
+          inp.value = fields[k];
+          f.appendChild(inp);
+        });
+        document.body.appendChild(f);
+        f.submit();
+      }
+
+      syncBtn.addEventListener("click", function () {
+        var url = syncBtn.getAttribute("data-sync-url");
+        if (url) postPanelForm(url, {});
+      });
+
+      if (autoBtn) {
+        autoBtn.addEventListener("click", function () {
+          var url = autoBtn.getAttribute("data-auto-url");
+          if (!url) return;
+          var cur = autoBtn.getAttribute("data-auto-enabled") === "1";
+          postPanelForm(url, { whitelist_auto_sync: cur ? "0" : "1" });
+        });
+      }
+
+      function domainKey(row) {
+        if (!row) return "";
+        return String(row.domain || row.host || "")
+          .trim()
+          .toLowerCase()
+          .replace(/\.+$/, "");
+      }
+
+      function updateSummary(data) {
+        var domEl = document.getElementById("whitelist-summary-domains");
+        var ipEl = document.getElementById("whitelist-summary-ips");
+        var meta = document.getElementById("whitelist-meta-line");
+        if (domEl) domEl.textContent = String(data.domains_count || 0);
+        if (ipEl) ipEl.textContent = String(data.ip_count || 0);
+        if (meta) {
+          var parts = [];
+          if (data.last_sync_at) parts.push("Последняя синхронизация: " + data.last_sync_at);
+          else parts.push("Ожидает первой синхронизации");
+          if (data.sync_status === "running") parts.push("идёт синхронизация…");
+          if (data.sync_error) parts.push("ошибка: " + data.sync_error);
+          meta.textContent = parts.join(" · ");
+        }
+        if (block) block.style.display = data.synced ? "block" : "none";
+        if (autoBtn) {
+          autoBtn.style.display = data.synced ? "inline-flex" : "none";
+          autoBtn.setAttribute("data-auto-enabled", data.auto_sync_enabled ? "1" : "0");
+          autoBtn.setAttribute("aria-pressed", data.auto_sync_enabled ? "true" : "false");
+          autoBtn.classList.toggle("is-on", !!data.auto_sync_enabled);
+          autoBtn.classList.toggle("is-off", !data.auto_sync_enabled);
+        }
+      }
+
+      function applyFilter() {
+        var inp = document.getElementById("whitelist-filter-input");
+        var q = inp ? String(inp.value || "").trim().toLowerCase() : "";
+        if (!q) {
+          filteredRows = allRows.slice();
+        } else {
+          filteredRows = allRows.filter(function (row) {
+            return domainKey(row).indexOf(q) >= 0;
+          });
+        }
+        page = 0;
+        renderWhitelistPage();
+      }
+
+      function renderWhitelistPage() {
+        if (!tbody) return;
+        var totalPages = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE));
+        if (page >= totalPages) page = totalPages - 1;
+        if (page < 0) page = 0;
+        var start = page * PAGE_SIZE;
+        var slice = filteredRows.slice(start, start + PAGE_SIZE);
+        tbody.textContent = "";
+        slice.forEach(function (row) {
+          var tr = document.createElement("tr");
+          var td0 = document.createElement("td");
+          td0.textContent = domainKey(row);
+          var td1 = document.createElement("td");
+          td1.className = "dr-explicit-ip";
+          var cidrs = row.cidrs || [];
+          if (cidrs.length) {
+            td1.textContent = cidrs.join(", ");
+          } else if (row.error) {
+            var em = document.createElement("span");
+            em.className = "muted";
+            em.textContent = "—";
+            td1.appendChild(em);
+            td1.appendChild(document.createElement("br"));
+            var er = document.createElement("span");
+            er.className = "err";
+            er.style.fontSize = "0.75rem";
+            er.textContent = row.error;
+            td1.appendChild(er);
+          } else {
+            var span = document.createElement("span");
+            span.className = "muted";
+            span.textContent = "нет IP";
+            td1.appendChild(span);
+          }
+          tr.appendChild(td0);
+          tr.appendChild(td1);
+          tbody.appendChild(tr);
+        });
+        var label = document.getElementById("whitelist-page-label");
+        if (label) label.textContent = filteredRows.length ? page + 1 + " / " + totalPages : "0 / 0";
+      }
+
+      function refreshWhitelistFromServer() {
+        if (!whitelistApiUrl) return;
+        fetch(whitelistApiUrl, { cache: "no-store", credentials: "same-origin" })
+          .then(function (r) {
+            return r.json();
+          })
+          .then(function (data) {
+            if (!data) return;
+            updateSummary(data);
+            allRows = Array.isArray(data.domains_detail) ? data.domains_detail : [];
+            applyFilter();
+            if (data.sync_status === "running") {
+              if (!pollTimer) {
+                pollTimer = window.setInterval(refreshWhitelistFromServer, 5000);
+              }
+            } else if (pollTimer) {
+              window.clearInterval(pollTimer);
+              pollTimer = null;
+            }
+          })
+          .catch(function () {});
+      }
+
+      var prevBtn = document.getElementById("whitelist-prev-btn");
+      var nextBtn = document.getElementById("whitelist-next-btn");
+      var filterInp = document.getElementById("whitelist-filter-input");
+      if (prevBtn) {
+        prevBtn.addEventListener("click", function () {
+          page -= 1;
+          renderWhitelistPage();
+        });
+      }
+      if (nextBtn) {
+        nextBtn.addEventListener("click", function () {
+          page += 1;
+          renderWhitelistPage();
+        });
+      }
+      if (filterInp) {
+        filterInp.addEventListener("input", function () {
+          applyFilter();
+        });
+      }
+
+      refreshWhitelistFromServer();
+      {% if direct_state.whitelist_sync_status == 'running' %}
+      pollTimer = window.setInterval(refreshWhitelistFromServer, 5000);
+      {% endif %}
+    })();
+    </script>
+    <script>
+    (function () {
+      var inp = document.getElementById("backup-import-file");
+      var status = document.getElementById("backup-file-status");
+      if (!inp || !status) return;
+      inp.addEventListener("change", function () {
+        var file = inp.files && inp.files[0];
+        status.textContent = file ? file.name : "Файл не выбран";
+        status.classList.toggle("has-file", !!file);
+      });
     })();
     </script>
 </body>
