@@ -24,4 +24,3 @@ local-config*.json
 .backup/
 .cursor/
 tmp/
-panel/demo/index.html
