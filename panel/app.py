@@ -100,20 +100,20 @@ _whitelist_sync_lock = threading.Lock()
 _whitelist_sync_thread: threading.Thread | None = None
 # ccTLD для правила domain_suffix → direct (чекбоксы в панели)
 DIRECT_DOMAIN_SUFFIX_OPTIONS: list[dict[str, str]] = [
-    {"flag": "🇷🇺", "country": "Россия", "suffix": ".ru"},
-    {"flag": "🇷🇺", "country": "Россия (.рф)", "suffix": ".xn--p1ai"},
-    {"flag": "🇷🇺", "country": "СССР (.su)", "suffix": ".su"},
-    {"flag": "🇧🇾", "country": "Беларусь", "suffix": ".by"},
-    {"flag": "🇰🇿", "country": "Казахстан", "suffix": ".kz"},
-    {"flag": "🇺🇦", "country": "Украина", "suffix": ".ua"},
-    {"flag": "🇦🇲", "country": "Армения", "suffix": ".am"},
-    {"flag": "🇦🇿", "country": "Азербайджан", "suffix": ".az"},
-    {"flag": "🇬🇪", "country": "Грузия", "suffix": ".ge"},
-    {"flag": "🇰🇬", "country": "Киргизия", "suffix": ".kg"},
-    {"flag": "🇲🇩", "country": "Молдова", "suffix": ".md"},
-    {"flag": "🇹🇯", "country": "Таджикистан", "suffix": ".tj"},
-    {"flag": "🇹🇲", "country": "Туркменистан", "suffix": ".tm"},
-    {"flag": "🇺🇿", "country": "Узбекистан", "suffix": ".uz"},
+    {"flag_iso": "ru", "label": ".ru", "suffix": ".ru", "title": "Россия"},
+    {"flag_iso": "ru", "label": ".рф", "suffix": ".xn--p1ai", "title": "Россия (.рф)"},
+    {"flag_iso": "ru", "label": ".su", "suffix": ".su", "title": "СССР (.su)"},
+    {"flag_iso": "by", "label": ".by", "suffix": ".by", "title": "Беларусь"},
+    {"flag_iso": "kz", "label": ".kz", "suffix": ".kz", "title": "Казахстан"},
+    {"flag_iso": "ua", "label": ".ua", "suffix": ".ua", "title": "Украина"},
+    {"flag_iso": "am", "label": ".am", "suffix": ".am", "title": "Армения"},
+    {"flag_iso": "az", "label": ".az", "suffix": ".az", "title": "Азербайджан"},
+    {"flag_iso": "ge", "label": ".ge", "suffix": ".ge", "title": "Грузия"},
+    {"flag_iso": "kg", "label": ".kg", "suffix": ".kg", "title": "Киргизия"},
+    {"flag_iso": "md", "label": ".md", "suffix": ".md", "title": "Молдова"},
+    {"flag_iso": "tj", "label": ".tj", "suffix": ".tj", "title": "Таджикистан"},
+    {"flag_iso": "tm", "label": ".tm", "suffix": ".tm", "title": "Туркменистан"},
+    {"flag_iso": "uz", "label": ".uz", "suffix": ".uz", "title": "Узбекистан"},
 ]
 DIRECT_DOMAIN_SUFFIX_DEFAULT = (".ru", ".xn--p1ai", ".su")
 CASCADE_REMOTE_SERVERS_PATH = Path("/opt/hy2-admin/data/cascade/remote_servers.json")
@@ -2198,10 +2198,13 @@ def direct_suffix_options_for_template(selected_raw: str = "") -> list[dict]:
     options: list[dict] = []
     for item in DIRECT_DOMAIN_SUFFIX_OPTIONS:
         suf = str(item.get("suffix", "")).strip()
+        iso = str(item.get("flag_iso", "")).strip().lower() or "un"
         options.append(
             {
-                "flag": str(item.get("flag", "")),
-                "country": str(item.get("country", "")),
+                "flag_iso": iso,
+                "flag_url": f"https://flagcdn.com/w20/{iso}.png",
+                "label": str(item.get("label", suf)),
+                "title": str(item.get("title", "")),
                 "suffix": suf,
                 "checked": suf in selected,
             }

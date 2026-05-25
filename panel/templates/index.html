@@ -191,63 +191,60 @@
     .dr-whitelist-meta { font-size: 0.82rem; color: var(--muted); margin: 0 0 8px; }
     .dr-whitelist-pager { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; font-size: 0.85rem; }
     .dr-whitelist-pager input[type="text"] { flex: 1 1 160px; max-width: 280px; }
-    .dr-suffix-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-      gap: 10px;
-      margin: 8px 0 14px;
-    }
-    .dr-suffix-grid > label.dr-suffix-item {
+    .dr-suffix-chips {
       display: flex;
-      flex-direction: row;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 8px 0 14px;
       align-items: center;
-      gap: 10px;
+    }
+    .dr-suffix-chips > label.dr-suffix-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
       margin-top: 0;
-      font-weight: 500;
-      padding: 10px 12px;
+      font-weight: 600;
+      padding: 6px 11px;
       border: 1px solid var(--border);
-      border-radius: 8px;
+      border-radius: 999px;
       background: var(--bg-soft);
       cursor: pointer;
       user-select: none;
       box-sizing: border-box;
-      width: 100%;
-      min-width: 0;
+      line-height: 1.2;
+      transition: border-color 0.15s, background 0.15s;
     }
-    .dr-suffix-grid > label.dr-suffix-item:has(input:checked) {
+    .dr-suffix-chips > label.dr-suffix-chip:hover {
+      border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+    }
+    .dr-suffix-chips > label.dr-suffix-chip:has(input:checked) {
       border-color: var(--accent);
-      background: color-mix(in srgb, var(--accent) 10%, var(--bg-soft));
+      background: color-mix(in srgb, var(--accent) 14%, var(--bg-soft));
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
     }
-    .dr-suffix-grid > label.dr-suffix-item input[type="checkbox"] {
-      width: 18px;
-      min-width: 18px;
-      max-width: 18px;
-      height: 18px;
-      padding: 0;
+    .dr-suffix-chips > label.dr-suffix-chip input[type="checkbox"] {
+      position: absolute;
+      opacity: 0;
+      width: 1px;
+      height: 1px;
       margin: 0;
-      flex: 0 0 18px;
-      box-sizing: border-box;
+      padding: 0;
+      pointer-events: none;
     }
-    .dr-suffix-flag {
-      flex: 0 0 auto;
-      font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif;
-      font-size: 1.35rem;
-      line-height: 1;
+    .dr-suffix-chip .dr-suffix-flag-img {
+      width: 20px;
+      height: 15px;
+      object-fit: cover;
+      border-radius: 2px;
+      flex-shrink: 0;
+      display: block;
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
     }
-    .dr-suffix-name {
-      flex: 1 1 auto;
-      min-width: 0;
-      font-size: 0.9rem;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .dr-suffix-code {
-      flex: 0 0 auto;
+    .dr-suffix-chip .dr-suffix-tld {
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 0.82rem;
-      color: var(--muted);
-      white-space: nowrap;
+      font-size: 0.92rem;
+      color: var(--text);
+      letter-spacing: 0.02em;
     }
     .wl-tz-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 10px 0 8px; font-size: 0.9rem; }
     .wl-tz-row select { padding: 6px 8px; border-radius: 6px; background: var(--bg-soft); color: inherit; border: 1px solid var(--border); min-width: 200px; }
@@ -1566,14 +1563,13 @@
           <button type="button" id="whitelist-sync-btn" class="secondary-btn" data-sync-url="{{ url_for('hy2.server_direct_routing_whitelist_sync_handler') }}" title="Синхронизация файла с GitHub (hxehex/russia-mobile-internet-whitelist): https://github.com/hxehex/russia-mobile-internet-whitelist/blob/main/whitelist.txt">Синхр. с GitHub</button>
         </div>
         <label>Суффиксы доменов → direct</label>
-        <p class="muted" style="margin:4px 0 8px; font-size:0.85rem;">Выберите национальные зоны: трафик на эти суффиксы пойдёт в <strong>direct</strong> (с VPS), остальное — по правилам ниже (каскад / default).</p>
-        <div class="dr-suffix-grid" role="group" aria-label="Суффиксы доменов direct">
+        <p class="muted" style="margin:4px 0 8px; font-size:0.85rem;">Отметьте зоны: трафик на выбранные суффиксы → <strong>direct</strong>, остальное — каскад / default. Клик по «чипу» включает или выключает зону.</p>
+        <div class="dr-suffix-chips" role="group" aria-label="Суффиксы доменов direct">
           {% for opt in direct_suffix_options | default([], true) %}
-          <label class="dr-suffix-item">
+          <label class="dr-suffix-chip" title="{{ opt.title }}{% if opt.suffix != opt.label %} ({{ opt.suffix }}){% endif %}">
             <input type="checkbox" name="direct_ru_suffixes" value="{{ opt.suffix }}" {% if opt.checked %}checked{% endif %}>
-            <span class="dr-suffix-flag" aria-hidden="true">{{ opt.flag }}</span>
-            <span class="dr-suffix-name">{{ opt.country }}</span>
-            <span class="dr-suffix-code">{{ opt.suffix }}</span>
+            <img class="dr-suffix-flag-img" src="{{ opt.flag_url }}" width="20" height="15" alt="" loading="lazy" decoding="async">
+            <span class="dr-suffix-tld">{{ opt.label }}</span>
           </label>
           {% endfor %}
         </div>
