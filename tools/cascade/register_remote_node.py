@@ -40,6 +40,11 @@ def main() -> int:
     ap.add_argument("--hy2-port", type=int, default=443, help="HY2 port")
     ap.add_argument("--hop-username", default="", help="HY2 hop username (userpass)")
     ap.add_argument("--hop-password", default="", help="HY2 hop password")
+    ap.add_argument(
+        "--hybrid",
+        action="store_true",
+        help="Hybrid exit: keep local-only HY2 users when syncing from master",
+    )
     args = ap.parse_args()
 
     ensure_dir(CASCADE_DIR)
@@ -66,6 +71,7 @@ def main() -> int:
         "hy2_port": args.hy2_port,
         "hop_username": hop_username,
         "hop_password": hop_password,
+        "hybrid": bool(args.hybrid),
     }
     payload["fingerprint"] = sha256_hex(f"{node_id}:{api_secret}:{host}:{args.api_port}")
     token = b64url_encode(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
@@ -85,6 +91,7 @@ def main() -> int:
             "hy2_port": args.hy2_port,
             "hop_username": hop_username,
             "hop_password": hop_password,
+            "hybrid": bool(args.hybrid),
         },
     )
     os.chmod(REMOTE_NODE_JSON, 0o600)

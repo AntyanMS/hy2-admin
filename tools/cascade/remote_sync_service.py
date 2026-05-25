@@ -97,6 +97,52 @@ def verify_signature(body: bytes, signature_hex: str, secret: str) -> bool:
     return hmac.compare_digest(expect, signature_hex.strip())
 
 
+def _truthy(val) -> bool:
+    if val is True or val == 1:
+        return True
+    if isinstance(val, str):
+        return val.strip().lower() in {"1", "true", "yes", "on"}
+    return False
+
+
+def is_hybrid_sync(payload: dict, node: dict) -> bool:
+    if _truthy(payload.get("hybrid")):
+        return True
+    if str(payload.get("sync_mode", "")).strip().lower() == "hybrid":
+        return True
+    return _truthy(node.get("hybrid"))
+
+
+def merge_userpass(current: dict[str, str], master: dict[str, str]) -> dict[str, str]:
+    merged = dict(current)
+    merged.update({str(k): str(v) for k, v in master.items()})
+    return merged
+
+
+def merge_users_container(current: dict, master: dict, users_key: str = "users") -> dict:
+    cur = current if isinstance(current, dict) else {}
+    mst = master if isinstance(master, dict) else {}
+    cur_users = cur.get(users_key) if isinstance(cur.get(users_key), dict) else {}
+    mst_users = mst.get(users_key) if isinstance(mst.get(users_key), dict) else {}
+    out = dict(cur)
+    out[users_key] = {**dict(cur_users), **dict(mst_users)}
+    return out
+
+
+def merge_user_state(current: dict, master: dict, master_usernames: set[str]) -> dict:
+    cur = current if isinstance(current, dict) else {}
+    mst = master if isinstance(master, dict) else {}
+    cur_dis = cur.get("disabled") if isinstance(cur.get("disabled"), dict) else {}
+    mst_dis = mst.get("disabled") if isinstance(mst.get("disabled"), dict) else {}
+    merged_dis = dict(cur_dis)
+    for username in master_usernames:
+        if username in mst_dis:
+            merged_dis[username] = mst_dis[username]
+    out = dict(cur)
+    out["disabled"] = merged_dis
+    return out
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "hy2-cascade-sync/0.1"
 
@@ -118,20 +164,51 @@ class Handler(BaseHTTPRequestHandler):
             auth_userpass = (snap.get("auth_userpass") or {})
             if not isinstance(auth_userpass, dict):
                 raise ValueError("auth_userpass invalid")
+            master_userpass = {str(k): str(v) for k, v in auth_userpass.items()}
+            hybrid = is_hybrid_sync(payload, node)
 
             cfg = load_cfg()
             cfg.setdefault("auth", {}).setdefault("userpass", {})
             current_userpass = {str(k): str(v) for k, v in (cfg["auth"].get("userpass") or {}).items()}
-            next_userpass = {str(k): str(v) for k, v in auth_userpass.items()}
+            if hybrid:
+                next_userpass = merge_userpass(current_userpass, master_userpass)
+            else:
+                next_userpass = master_userpass
             cfg_changed = current_userpass != next_userpass
             if cfg_changed:
                 cfg["auth"]["userpass"] = next_userpass
                 write_cfg(cfg)
 
-            save_json(Path("/opt/hy2-admin/data/user_state.json"), snap.get("user_state") or {"disabled": {}})
-            save_json(Path("/opt/hy2-admin/data/users_meta.json"), snap.get("user_meta") or {"users": {}})
-            save_json(Path("/opt/hy2-admin/data/user_notes.json"), snap.get("user_notes") or {"users": {}})
-            save_json(Path("/opt/hy2-admin/data/user_ip_state.json"), snap.get("user_ip_state") or {"users": {}})
+            data_dir = Path("/opt/hy2-admin/data")
+            master_users = set(master_userpass)
+            if hybrid:
+                user_state = merge_user_state(
+                    load_json(data_dir / "user_state.json", {"disabled": {}}),
+                    snap.get("user_state") or {"disabled": {}},
+                    master_users,
+                )
+                user_meta = merge_users_container(
+                    load_json(data_dir / "users_meta.json", {"users": {}}),
+                    snap.get("user_meta") or {"users": {}},
+                )
+                user_notes = merge_users_container(
+                    load_json(data_dir / "user_notes.json", {"users": {}}),
+                    snap.get("user_notes") or {"users": {}},
+                )
+                user_ip_state = merge_users_container(
+                    load_json(data_dir / "user_ip_state.json", {"users": {}}),
+                    snap.get("user_ip_state") or {"users": {}},
+                )
+            else:
+                user_state = snap.get("user_state") or {"disabled": {}}
+                user_meta = snap.get("user_meta") or {"users": {}}
+                user_notes = snap.get("user_notes") or {"users": {}}
+                user_ip_state = snap.get("user_ip_state") or {"users": {}}
+
+            save_json(data_dir / "user_state.json", user_state)
+            save_json(data_dir / "users_meta.json", user_meta)
+            save_json(data_dir / "user_notes.json", user_notes)
+            save_json(data_dir / "user_ip_state.json", user_ip_state)
 
             save_json(
                 SYNC_STATUS,
@@ -140,12 +217,22 @@ class Handler(BaseHTTPRequestHandler):
                     "at": dt.datetime.now(dt.timezone.utc).isoformat(),
                     "reason": payload.get("reason", ""),
                     "source": payload.get("source", ""),
-                    "users": len(auth_userpass),
+                    "hybrid": hybrid,
+                    "users": len(next_userpass),
+                    "master_users": len(master_userpass),
+                    "local_only_users": len(set(current_userpass) - master_users) if hybrid else 0,
                     "config_changed": cfg_changed,
                 },
             )
 
-            out = json.dumps({"ok": True, "users": len(auth_userpass)}).encode("utf-8")
+            out = json.dumps(
+                {
+                    "ok": True,
+                    "hybrid": hybrid,
+                    "users": len(next_userpass),
+                    "master_users": len(master_userpass),
+                }
+            ).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(out)))

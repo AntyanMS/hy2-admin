@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import hashlib
 import hmac
 import json
@@ -78,6 +79,14 @@ def build_snapshot() -> dict[str, Any]:
     }
 
 
+def _truthy(val: Any) -> bool:
+    if val is True or val == 1:
+        return True
+    if isinstance(val, str):
+        return val.strip().lower() in {"1", "true", "yes", "on"}
+    return False
+
+
 def digest_snapshot(snapshot: dict[str, Any]) -> str:
     raw = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -130,7 +139,55 @@ def send(remote: dict[str, Any], payload: dict[str, Any], timeout_sec: int) -> t
         return False, f"error:{e}"
 
 
+def run_sync_round(reason: str, force: bool, timeout_sec: int) -> list[dict[str, Any]]:
+    remotes = load_remotes()
+    snapshot = build_snapshot()
+    dgst = digest_snapshot(snapshot)
+    state = load_json(STATE_FILE, {"last_digest": "", "rows": []})
+    if not force and dgst == state.get("last_digest"):
+        return list(state.get("rows") or [])
+    payload = {
+        "source": "gateway",
+        "reason": reason,
+        "ts": int(time.time()),
+        "snapshot": snapshot,
+    }
+    rows: list[dict[str, Any]] = []
+    for r in remotes:
+        node_payload = dict(payload)
+        if _truthy(r.get("hybrid")):
+            node_payload["hybrid"] = True
+            node_payload["sync_mode"] = "hybrid"
+        ok, msg = send(r, node_payload, timeout_sec=timeout_sec)
+        rows.append(
+            {
+                "node_id": r.get("node_id", ""),
+                "name": r.get("name", ""),
+                "host": r.get("host", ""),
+                "ok": ok,
+                "result": msg,
+                "at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+    save_json(
+        STATE_FILE,
+        {
+            "last_digest": dgst,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "rows": rows,
+        },
+    )
+    last_status = Path("/opt/hy2-admin/data/cascade/last_sync_status.json")
+    save_json(last_status, {"reason": reason, "rows": rows})
+    return rows
+
+
 def main() -> int:
+    ap = argparse.ArgumentParser(description="HY2 cascade master sync worker")
+    ap.add_argument("--once", action="store_true", help="Run one sync round and exit")
+    ap.add_argument("--force", action="store_true", help="Sync even if snapshot digest unchanged")
+    args = ap.parse_args()
+
     env = load_env(ENV_PATH)
     if (env.get("CASCADE_MASTER_ENABLED") or "0").strip().lower() not in {"1", "true", "yes", "on"}:
         print("CASCADE_MASTER_ENABLED is off")
@@ -140,39 +197,13 @@ def main() -> int:
     interval = max(3, min(interval, 60))
     timeout_sec = max(3, min(timeout_sec, 30))
 
+    if args.once:
+        rows = run_sync_round("cli_once", force=args.force, timeout_sec=timeout_sec)
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+        return 0
+
     while True:
-        remotes = load_remotes()
-        snapshot = build_snapshot()
-        dgst = digest_snapshot(snapshot)
-        state = load_json(STATE_FILE, {"last_digest": "", "rows": []})
-        if dgst != state.get("last_digest"):
-            payload = {
-                "source": "gateway",
-                "reason": "worker_auto_sync",
-                "ts": int(time.time()),
-                "snapshot": snapshot,
-            }
-            rows: list[dict[str, Any]] = []
-            for r in remotes:
-                ok, msg = send(r, payload, timeout_sec=timeout_sec)
-                rows.append(
-                    {
-                        "node_id": r.get("node_id", ""),
-                        "name": r.get("name", ""),
-                        "host": r.get("host", ""),
-                        "ok": ok,
-                        "result": msg,
-                        "at": datetime.now(timezone.utc).isoformat(),
-                    }
-                )
-            save_json(
-                STATE_FILE,
-                {
-                    "last_digest": dgst,
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                    "rows": rows,
-                },
-            )
+        run_sync_round("worker_auto_sync", force=False, timeout_sec=timeout_sec)
         time.sleep(interval)
 
 

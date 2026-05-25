@@ -488,12 +488,18 @@ EOF
 
 configure_fail2ban() {
   mkdir -p /etc/fail2ban/jail.d
-  cat > /etc/fail2ban/jail.d/sshd-hard.local <<'EOF'
+  rm -f /etc/fail2ban/jail.d/sshd-hard.local
+  cat > /etc/fail2ban/jail.d/00-trusted-peers.local <<'EOF'
+[DEFAULT]
+ignoreip = 127.0.0.1/8 ::1 77.220.143.56 188.127.249.241 185.239.49.36 94.159.40.2 185.239.48.216 193.124.56.13 193.124.59.183
+EOF
+  cat > /etc/fail2ban/jail.d/sshd-permanent-3.local <<'EOF'
 [sshd]
 enabled = true
-maxretry = 5
+maxretry = 3
 findtime = 10m
-bantime = 4h
+bantime = -1
+banaction = ufw
 EOF
   systemctl enable fail2ban >/dev/null 2>&1 || true
   systemctl restart fail2ban || true
