@@ -96,6 +96,7 @@
   <div class="card">
     <h1>Вход в панель</h1>
     {% if error %}<p class="err">{{ error }}</p>{% endif %}
+    {% if info %}<p class="ok">{{ info }}</p>{% endif %}
     {% if request.args.get('updated') == '1' %}
     <p class="ok">Логин и пароль панели обновлены. Войдите снова с новым паролем.</p>
     {% endif %}
@@ -103,7 +104,11 @@
       <input type="hidden" name="next" value="{{ next_path }}" />
       <input type="hidden" name="csrf" value="{{ csrf }}" />
       <input id="u" name="user" type="text" required autocomplete="username" value="{{ default_user or '' }}" placeholder="Login" aria-label="Логин" />
+      {% if totp_step|default(false) %}
+      <input type="hidden" name="password" value="" />
+      {% else %}
       <input id="p" name="password" type="password" required autocomplete="current-password" placeholder="Password" aria-label="Пароль" />
+      {% endif %}
       {% if totp_required|default(false) %}
       <input id="t" name="totp" type="text" inputmode="numeric" pattern="[0-9 ]*" maxlength="12" autocomplete="one-time-code" placeholder="2FA code" aria-label="Код 2FA" />
       {% else %}
