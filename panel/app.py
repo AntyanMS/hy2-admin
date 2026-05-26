@@ -29,6 +29,7 @@ from urllib.parse import quote
 import qrcode
 import yaml
 from flask import Blueprint, Flask, Response, redirect, render_template, request, session, url_for
+from werkzeug.security import check_password_hash, generate_password_hash
 
 from suffix_flags import FLAG_SVG_24x16
 
@@ -91,6 +92,12 @@ USER_NOTES_PATH = Path("/opt/hy2-admin/data/user_notes.json")
 USER_IP_STATE_PATH = Path("/opt/hy2-admin/data/user_ip_state.json")
 DIRECT_EXPLICIT_STORE_PATH = Path("/opt/hy2-admin/data/direct_routing_explicit.json")
 DIRECT_WHITELIST_STORE_PATH = Path("/opt/hy2-admin/data/direct_routing_github_whitelist.json")
+SUB_ADMINS_STORE_PATH = Path("/opt/hy2-admin/data/panel_sub_admins.json")
+_sub_admins_lock = threading.Lock()
+PANEL_LOGIN_SESSIONS_PATH = Path("/opt/hy2-admin/data/panel_login_sessions.json")
+_panel_login_sessions_lock = threading.Lock()
+PANEL_LOGIN_SESSIONS_TOUCH_MIN_SEC = 60
+PANEL_LOGIN_SESSIONS_RETENTION_DAYS = 14
 GITHUB_WHITELIST_RAW_URL = (
     ENV.get("GITHUB_WHITELIST_RAW_URL")
     or "https://raw.githubusercontent.com/hxehex/russia-mobile-internet-whitelist/main/whitelist.txt"
@@ -189,6 +196,351 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 if ENV.get("PANEL_SESSION_COOKIE_SECURE", "0") == "1":
     app.config["SESSION_COOKIE_SECURE"] = True
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
+
+
+def _journalctl_available() -> bool:
+  raw = (ENV.get("PANEL_SKIP_JOURNAL") or "").strip().lower()
+  if raw in {"1", "true", "yes", "on"}:
+    return False
+  return shutil.which("journalctl") is not None
+
+
+def _run_journalctl(args: list[str], **kwargs) -> subprocess.CompletedProcess:
+  if not _journalctl_available():
+    return subprocess.CompletedProcess(args=["journalctl", *args], returncode=127, stdout="", stderr="")
+  try:
+    return subprocess.run(["journalctl", *args], **kwargs)
+  except FileNotFoundError:
+    return subprocess.CompletedProcess(args=["journalctl", *args], returncode=127, stdout="", stderr="")
+
+
+def _default_sub_admins_store() -> dict:
+    return {"admins": [], "user_owner": {}}
+
+
+def load_sub_admins_store() -> dict:
+    with _sub_admins_lock:
+        if not SUB_ADMINS_STORE_PATH.exists():
+            return _default_sub_admins_store()
+        try:
+            raw = json.loads(SUB_ADMINS_STORE_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return _default_sub_admins_store()
+    if not isinstance(raw, dict):
+        return _default_sub_admins_store()
+    admins = raw.get("admins")
+    owners = raw.get("user_owner")
+    if not isinstance(admins, list):
+        admins = []
+    if not isinstance(owners, dict):
+        owners = {}
+    clean_owners: dict[str, str] = {}
+    for k, v in owners.items():
+        if isinstance(k, str) and k.strip() and isinstance(v, str) and v.strip():
+            clean_owners[k.strip()] = v.strip()
+    clean_admins: list[dict] = []
+    for item in admins:
+        if not isinstance(item, dict):
+            continue
+        aid = str(item.get("id", "")).strip()
+        uname = str(item.get("username", "")).strip()
+        ph = str(item.get("password_hash", "")).strip()
+        if not aid or not uname or not ph:
+            continue
+        clean_admins.append(
+            {
+                "id": aid,
+                "username": uname,
+                "password_hash": ph,
+                "created_at": str(item.get("created_at", "")),
+                "disabled": bool(item.get("disabled")),
+            }
+        )
+    return {"admins": clean_admins, "user_owner": clean_owners}
+
+
+def save_sub_admins_store(data: dict) -> None:
+    SUB_ADMINS_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "admins": data.get("admins") if isinstance(data.get("admins"), list) else [],
+        "user_owner": data.get("user_owner") if isinstance(data.get("user_owner"), dict) else {},
+    }
+    tmp = SUB_ADMINS_STORE_PATH.with_suffix(".json.tmp")
+    with _sub_admins_lock:
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(SUB_ADMINS_STORE_PATH)
+
+
+def valid_panel_sub_admin_username(username: str) -> bool:
+    return bool(re.match(r"^[a-zA-Z0-9._-]{3,32}$", (username or "").strip()))
+
+
+def find_sub_admin_by_username(username: str) -> dict | None:
+    key = (username or "").strip().lower()
+    if not key:
+        return None
+    for item in load_sub_admins_store().get("admins") or []:
+        if str(item.get("username", "")).strip().lower() == key:
+            return item
+    return None
+
+
+def find_sub_admin_by_id(admin_id: str) -> dict | None:
+    aid = (admin_id or "").strip()
+    if not aid:
+        return None
+    for item in load_sub_admins_store().get("admins") or []:
+        if str(item.get("id", "")).strip() == aid:
+            return item
+    return None
+
+
+def get_user_owner_id(username: str) -> str | None:
+    owners = load_sub_admins_store().get("user_owner") or {}
+    if not isinstance(owners, dict):
+        return None
+    owner = owners.get(username)
+    if owner is None:
+        return None
+    return str(owner).strip() or None
+
+
+def set_user_owner_id(username: str, owner_id: str) -> None:
+    data = load_sub_admins_store()
+    owners = data.setdefault("user_owner", {})
+    if not isinstance(owners, dict):
+        owners = {}
+        data["user_owner"] = owners
+    owners[username] = owner_id
+    save_sub_admins_store(data)
+
+
+def clear_user_owner(username: str) -> None:
+    data = load_sub_admins_store()
+    owners = data.get("user_owner")
+    if not isinstance(owners, dict) or username not in owners:
+        return
+    owners.pop(username, None)
+    save_sub_admins_store(data)
+
+
+def clear_owners_for_sub_admin(admin_id: str) -> None:
+    aid = (admin_id or "").strip()
+    if not aid:
+        return
+    data = load_sub_admins_store()
+    owners = data.get("user_owner")
+    if not isinstance(owners, dict):
+        return
+    data["user_owner"] = {u: o for u, o in owners.items() if str(o).strip() != aid}
+    save_sub_admins_store(data)
+
+
+def count_users_for_sub_admin(admin_id: str) -> int:
+    aid = (admin_id or "").strip()
+    if not aid:
+        return 0
+    owners = load_sub_admins_store().get("user_owner") or {}
+    if not isinstance(owners, dict):
+        return 0
+    return sum(1 for o in owners.values() if str(o).strip() == aid)
+
+
+def _all_panel_client_usernames() -> set[str]:
+    cfg = load_hy2_config()
+    state = load_user_state()
+    up = cfg.get("auth", {}).get("userpass") if isinstance(cfg.get("auth"), dict) else {}
+    if not isinstance(up, dict):
+        up = {}
+    disabled = state.get("disabled") if isinstance(state.get("disabled"), dict) else {}
+    hidden = hy2_ui_hidden_usernames()
+    names: set[str] = set()
+    for u in list(up.keys()) + list(disabled.keys()):
+        key = str(u).strip()
+        if key and key.lower() not in hidden:
+            names.add(key)
+    return names
+
+
+def user_owner_display(username: str) -> dict:
+    """Метка владельца клиента для UI: главный админ или логин доп. администратора."""
+    owner_id = get_user_owner_id(username)
+    if not owner_id:
+        return {"owner_kind": "main", "owner_id": "", "owner_label": "главный"}
+    sub = find_sub_admin_by_id(owner_id)
+    if sub:
+        return {
+            "owner_kind": "sub",
+            "owner_id": owner_id,
+            "owner_label": str(sub.get("username", "")).strip() or "?",
+        }
+    return {"owner_kind": "unknown", "owner_id": owner_id, "owner_label": "?"}
+
+
+def list_usernames_owned_by_sub_admin(admin_id: str) -> list[str]:
+    aid = (admin_id or "").strip()
+    if not aid:
+        return []
+    names = _all_panel_client_usernames()
+    return sorted([u for u in names if get_user_owner_id(u) == aid], key=lambda x: str(x).lower())
+
+
+def list_main_pool_usernames() -> list[str]:
+    """Клиенты без привязки к доп. админу (созданы / принадлежат главному)."""
+    names = _all_panel_client_usernames()
+    return sorted([u for u in names if not get_user_owner_id(u)], key=lambda x: str(x).lower())
+
+
+def transfer_users_to_sub_admin(usernames: list[str], target_admin_id: str) -> int:
+    aid = (target_admin_id or "").strip()
+    if not find_sub_admin_by_id(aid):
+        raise ValueError("Дополнительный администратор не найден")
+    known = _all_panel_client_usernames()
+    moved = 0
+    for raw in usernames:
+        uname = str(raw or "").strip()
+        if not uname or uname not in known:
+            continue
+        set_user_owner_id(uname, aid)
+        moved += 1
+    if moved == 0:
+        raise ValueError("Не выбраны клиенты для передачи")
+    return moved
+
+
+def release_users_to_main(usernames: list[str], *, from_sub_admin_id: str = "") -> int:
+    """Снять привязку клиентов к доп. админу (вернуть главному)."""
+    aid = (from_sub_admin_id or "").strip()
+    released = 0
+    for raw in usernames:
+        uname = str(raw or "").strip()
+        if not uname:
+            continue
+        owner = get_user_owner_id(uname)
+        if not owner:
+            continue
+        if aid and owner != aid:
+            continue
+        clear_user_owner(uname)
+        released += 1
+    if released == 0:
+        raise ValueError("Не выбраны клиенты для возврата главному")
+    return released
+
+
+def sub_admins_for_template() -> list[dict]:
+    out: list[dict] = []
+    for item in load_sub_admins_store().get("admins") or []:
+        aid = str(item.get("id", "")).strip()
+        clients = list_usernames_owned_by_sub_admin(aid)
+        out.append(
+            {
+                "id": aid,
+                "username": str(item.get("username", "")),
+                "created_at": str(item.get("created_at", "")),
+                "disabled": bool(item.get("disabled")),
+                "client_count": len(clients),
+                "clients": clients,
+            }
+        )
+    return sorted(out, key=lambda x: str(x.get("username", "")).lower())
+
+
+def create_sub_admin(username: str, password: str) -> str:
+    uname = (username or "").strip()
+    if not valid_panel_sub_admin_username(uname):
+        raise ValueError("Логин доп. администратора: 3–32 символа (буквы, цифры, . _ -)")
+    if "\n" in password or "\r" in password:
+        raise ValueError("Пароль не должен содержать переводы строк")
+    if len(password) < 8:
+        raise ValueError("Пароль: минимум 8 символов")
+    main_u, _ = get_panel_credentials()
+    if uname.lower() == main_u.strip().lower():
+        raise ValueError("Этот логин занят главным администратором")
+    if find_sub_admin_by_username(uname):
+        raise ValueError("Администратор с таким логином уже существует")
+    data = load_sub_admins_store()
+    admins = data.setdefault("admins", [])
+    if not isinstance(admins, list):
+        admins = []
+        data["admins"] = admins
+    admin_id = secrets.token_hex(8)
+    admins.append(
+        {
+            "id": admin_id,
+            "username": uname,
+            "password_hash": generate_password_hash(password),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "disabled": False,
+        }
+    )
+    save_sub_admins_store(data)
+    return admin_id
+
+
+def delete_sub_admin(admin_id: str) -> None:
+    aid = (admin_id or "").strip()
+    item = find_sub_admin_by_id(aid)
+    if not item:
+        raise ValueError("Дополнительный администратор не найден")
+    data = load_sub_admins_store()
+    data["admins"] = [a for a in (data.get("admins") or []) if str(a.get("id", "")).strip() != aid]
+    clear_owners_for_sub_admin(aid)
+    save_sub_admins_store(data)
+
+
+def reset_sub_admin_password(admin_id: str, password: str) -> None:
+    if "\n" in password or "\r" in password:
+        raise ValueError("Пароль не должен содержать переводы строк")
+    if len(password) < 8:
+        raise ValueError("Пароль: минимум 8 символов")
+    aid = (admin_id or "").strip()
+    data = load_sub_admins_store()
+    found = False
+    for item in data.get("admins") or []:
+        if str(item.get("id", "")).strip() != aid:
+            continue
+        item["password_hash"] = generate_password_hash(password)
+        found = True
+        break
+    if not found:
+        raise ValueError("Дополнительный администратор не найден")
+    save_sub_admins_store(data)
+
+
+def is_main_panel_admin() -> bool:
+    if not panel_session_ok():
+        return False
+    return (session.get("panel_role") or "main") == "main"
+
+
+def is_sub_panel_admin() -> bool:
+    return panel_session_ok() and (session.get("panel_role") or "") == "sub"
+
+
+def get_session_sub_admin_id() -> str:
+    if not is_sub_panel_admin():
+        return ""
+    return str(session.get("sub_admin_id") or "").strip()
+
+
+def get_session_panel_username() -> str:
+    return str(session.get("panel_username") or "").strip()
+
+
+def user_visible_to_current_session(username: str) -> bool:
+    if is_main_panel_admin():
+        return True
+    sub_id = get_session_sub_admin_id()
+    if not sub_id:
+        return False
+    owner = get_user_owner_id(username)
+    return owner == sub_id
+
+
+def assert_user_manage_access(username: str) -> None:
+    if not user_visible_to_current_session(username):
+        raise ValueError("Нет доступа к этому пользователю")
 
 
 def _normalize_panel_prefix(raw: Optional[str]) -> str:
@@ -647,8 +999,389 @@ def verify_panel_totp(code: str) -> bool:
         return False
 
 
+PANEL_TOTP_ISSUER = "HY2-Admin"
+TOTP_SETUP_SESSION_KEY = "panel_totp_setup_secret"
+
+
+def panel_totp_enabled() -> bool:
+    return panel_totp_required()
+
+
+def panel_totp_setup_secret_pending() -> str:
+    return (session.get(TOTP_SETUP_SESSION_KEY) or "").strip().replace(" ", "").upper().rstrip("=")
+
+
+def panel_totp_provisioning_uri(secret: str, account: str) -> str:
+    if not secret or pyotp is None:
+        return ""
+    name = (account or "admin").strip() or "admin"
+    return pyotp.TOTP(secret).provisioning_uri(name=name, issuer_name=PANEL_TOTP_ISSUER)
+
+
+def _format_totp_secret_display(secret: str) -> str:
+    s = re.sub(r"\s+", "", secret or "").upper()
+    if not s:
+        return ""
+    return " ".join(s[i : i + 4] for i in range(0, len(s), 4))
+
+
+def panel_totp_for_template() -> dict:
+    enabled = panel_totp_enabled()
+    secret = get_panel_totp_secret()
+    pending = panel_totp_setup_secret_pending()
+    account = get_panel_credentials()[0]
+    pyotp_ok = pyotp is not None
+    setup_uri = panel_totp_provisioning_uri(pending, account) if pending and pyotp_ok else ""
+    masked = ""
+    if secret:
+        masked = secret[:4] + "…" + secret[-4:] if len(secret) > 8 else "****"
+    return {
+        "enabled": enabled,
+        "configured": bool(secret),
+        "pyotp_available": pyotp_ok,
+        "pending_setup": bool(pending),
+        "issuer": PANEL_TOTP_ISSUER,
+        "account": account,
+        "secret_masked": masked,
+        "setup_secret_display": _format_totp_secret_display(pending),
+        "setup_uri": setup_uri,
+    }
+
+
+def _verify_panel_password_or_raise(password: str) -> None:
+    _, pw = get_panel_credentials()
+    if not pw:
+        raise ValueError("PANEL_BASIC_PASS не задан")
+    if not secrets.compare_digest(password or "", pw):
+        raise ValueError("Неверный текущий пароль")
+
+
+def enable_panel_totp_in_env(secret: str) -> None:
+    s = re.sub(r"\s+", "", secret or "").upper().rstrip("=")
+    if not s:
+        raise ValueError("Пустой секрет 2FA")
+    update_env_keys(
+        {
+            "PANEL_TOTP_SECRET": s,
+            "PANEL_TOTP_LOGIN_ENABLED": "1",
+            "PANEL_TOTP_DISABLED": "0",
+        }
+    )
+
+
+def disable_panel_totp_in_env() -> None:
+    update_env_keys(
+        {
+            "PANEL_TOTP_SECRET": "",
+            "PANEL_TOTP_LOGIN_ENABLED": "0",
+            "PANEL_TOTP_DISABLED": "0",
+        }
+    )
+
+
+def verify_totp_code_for_secret(secret: str, code: str) -> bool:
+    if not secret or pyotp is None:
+        return False
+    digits = re.sub(r"\D", "", code or "")
+    if len(digits) != 6:
+        return False
+    try:
+        return bool(pyotp.TOTP(secret).verify(digits, valid_window=1))
+    except Exception:
+        return False
+
+
+LOGIN_TOTP_PENDING_KEY = "login_totp_pending"
+
+
+def _sub_admin_totp_secret(sub_admin: dict) -> str:
+    return str((sub_admin or {}).get("totp_secret") or "").strip().replace(" ", "").upper().rstrip("=")
+
+
+def totp_required_for_username(username: str) -> bool:
+    """Пер-логин 2FA: спрашиваем код только если он включён у конкретного логина."""
+    uname = (username or "").strip()
+    if not uname:
+        return False
+    main_user, _ = get_panel_credentials()
+    if secrets.compare_digest(uname, main_user):
+        return panel_totp_required()
+    sub = find_sub_admin_by_username(uname)
+    if not sub or sub.get("disabled"):
+        return False
+    return bool(_sub_admin_totp_secret(sub))
+
+
+def verify_totp_for_username(username: str, code: str) -> bool:
+    uname = (username or "").strip()
+    if not uname:
+        return False
+    main_user, _ = get_panel_credentials()
+    if secrets.compare_digest(uname, main_user):
+        return verify_panel_totp(code)
+    sub = find_sub_admin_by_username(uname)
+    secret = _sub_admin_totp_secret(sub or {})
+    return verify_totp_code_for_secret(secret, code)
+
+
+def _ua_hash() -> str:
+    ua = (request.headers.get("User-Agent") or "").strip()
+    return hashlib.sha256(ua.encode("utf-8", errors="ignore")).hexdigest()[:16]
+
+
+def _start_totp_pending(username: str, role: str, sub_admin_id: str = "") -> None:
+    session[LOGIN_TOTP_PENDING_KEY] = {
+        "u": (username or "").strip(),
+        "role": (role or "").strip(),
+        "sid": (sub_admin_id or "").strip(),
+        "ip": _client_ip(),
+        "ua": _ua_hash(),
+        "ts": int(time.time()),
+    }
+
+
+def _get_totp_pending() -> dict:
+    data = session.get(LOGIN_TOTP_PENDING_KEY) or {}
+    return data if isinstance(data, dict) else {}
+
+
+def _clear_totp_pending() -> None:
+    session.pop(LOGIN_TOTP_PENDING_KEY, None)
+
+
+def _totp_pending_valid_for(username: str) -> tuple[bool, str, str]:
+    """Возвращает (ok, role, sub_admin_id)."""
+    rec = _get_totp_pending()
+    if not rec:
+        return False, "", ""
+    try:
+        ts = int(rec.get("ts") or 0)
+    except Exception:
+        ts = 0
+    if ts <= 0 or (time.time() - ts) > 180:
+        return False, "", ""
+    if str(rec.get("ip") or "") != _client_ip():
+        return False, "", ""
+    if str(rec.get("ua") or "") != _ua_hash():
+        return False, "", ""
+    if str(rec.get("u") or "").strip() != (username or "").strip():
+        return False, "", ""
+    role = str(rec.get("role") or "").strip()
+    sid = str(rec.get("sid") or "").strip()
+    return True, role, sid
+
+
+def _panel_session_ua_meta(ua: str) -> dict:
+    """Парсинг User-Agent для иконок и подписей в UI."""
+    low = (ua or "").lower()
+    browser_key = "other"
+    browser_name = "Браузер"
+    if "edg/" in low or "edge/" in low:
+        browser_key, browser_name = "edge", "Edge"
+    elif "firefox/" in low or "fxios" in low:
+        browser_key, browser_name = "firefox", "Firefox"
+    elif "opr/" in low or "opera" in low:
+        browser_key, browser_name = "opera", "Opera"
+    elif "brave" in low:
+        browser_key, browser_name = "brave", "Brave"
+    elif "crios" in low or ("chrome/" in low and "chromium" not in low):
+        browser_key, browser_name = "chrome", "Chrome"
+    elif "safari/" in low:
+        browser_key, browser_name = "safari", "Safari"
+
+    platform_key = "other"
+    platform_name = "ОС"
+    if "windows" in low:
+        platform_key, platform_name = "windows", "Windows"
+    elif "android" in low:
+        platform_key, platform_name = "android", "Android"
+    elif "iphone" in low:
+        platform_key, platform_name = "ios", "iOS"
+    elif "ipad" in low:
+        platform_key, platform_name = "ios", "iPadOS"
+    elif "mac os" in low or "macintosh" in low:
+        platform_key, platform_name = "macos", "macOS"
+    elif "linux" in low or "ubuntu" in low or "fedora" in low:
+        platform_key, platform_name = "linux", "Linux"
+
+    device_key = "desktop"
+    device_name = "Компьютер"
+    if "ipad" in low or "tablet" in low:
+        device_key, device_name = "tablet", "Планшет"
+    elif "mobile" in low or "iphone" in low or ("android" in low and "mobile" in low):
+        device_key, device_name = "mobile", "Телефон"
+
+    return {
+        "browser_key": browser_key,
+        "browser_name": browser_name,
+        "platform_key": platform_key,
+        "platform_name": platform_name,
+        "device_key": device_key,
+        "device_name": device_name,
+        "device_label": f"{browser_name} · {platform_name}",
+    }
+
+
+def _load_panel_login_sessions_store() -> dict:
+    store: dict = {"sessions": {}}
+    if PANEL_LOGIN_SESSIONS_PATH.exists():
+        try:
+            raw = json.loads(PANEL_LOGIN_SESSIONS_PATH.read_text(encoding="utf-8")) or store
+            if isinstance(raw, dict):
+                store = raw
+        except json.JSONDecodeError:
+            pass
+    sessions = store.get("sessions")
+    if not isinstance(sessions, dict):
+        sessions = {}
+        store["sessions"] = sessions
+    return store
+
+
+def _save_panel_login_sessions_store(store: dict) -> None:
+    sessions = store.get("sessions")
+    if not isinstance(sessions, dict):
+        sessions = {}
+        store["sessions"] = sessions
+    cutoff = datetime.now(timezone.utc) - timedelta(days=PANEL_LOGIN_SESSIONS_RETENTION_DAYS)
+    for k, rec in list(sessions.items()):
+        if not isinstance(rec, dict):
+            sessions.pop(k, None)
+            continue
+        c = iso_to_dt(str(rec.get("created_at") or ""))
+        if c and c < cutoff:
+            sessions.pop(k, None)
+    PANEL_LOGIN_SESSIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = PANEL_LOGIN_SESSIONS_PATH.with_suffix(".tmp")
+    tmp_path.write_text(json.dumps(store, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    os.replace(str(tmp_path), str(PANEL_LOGIN_SESSIONS_PATH))
+
+
+def _panel_session_record_from_request(username: str, role: str, sid: str) -> dict:
+    ip = _client_ip()
+    ua_str = str(getattr(request.user_agent, "string", "") or "")
+    meta = _panel_session_ua_meta(ua_str)
+    now = datetime.now(timezone.utc).isoformat()
+    return {
+        "id": sid,
+        "user": username,
+        "role": role,
+        "ua": ua_str,
+        "ip": ip,
+        "created_at": now,
+        "last_seen_at": now,
+        "last_seen_ip": ip,
+        **meta,
+    }
+
+
+def register_panel_login_session(username: str, role: str) -> str:
+    """Регистрирует успешный вход и привязывает cookie к серверной записи."""
+    sid = secrets.token_urlsafe(32)
+    with _panel_login_sessions_lock:
+        store = _load_panel_login_sessions_store()
+        sessions = store["sessions"]
+        sessions[sid] = _panel_session_record_from_request(username, role, sid)
+        _save_panel_login_sessions_store(store)
+    session["panel_session_id"] = sid
+    return sid
+
+
+def _panel_session_view(rec: dict, *, sid: str, is_current: bool) -> dict:
+    ua = str(rec.get("ua") or "")
+    meta = _panel_session_ua_meta(ua)
+    return {
+        "id": sid,
+        "device_label": str(rec.get("device_label") or meta["device_label"]),
+        "browser_key": str(rec.get("browser_key") or meta["browser_key"]),
+        "browser_name": str(rec.get("browser_name") or meta["browser_name"]),
+        "platform_key": str(rec.get("platform_key") or meta["platform_key"]),
+        "platform_name": str(rec.get("platform_name") or meta["platform_name"]),
+        "device_key": str(rec.get("device_key") or meta["device_key"]),
+        "device_name": str(rec.get("device_name") or meta["device_name"]),
+        "ip": str(rec.get("ip") or ""),
+        "created_at": str(rec.get("created_at") or ""),
+        "last_seen_at": str(rec.get("last_seen_at") or ""),
+        "last_seen_ip": str(rec.get("last_seen_ip") or ""),
+        "is_current": is_current,
+    }
+
+
 def panel_session_ok() -> bool:
-    return bool(session.get("panel_auth"))
+    if not session.get("panel_auth"):
+        return False
+
+    username = str(session.get("panel_username") or "").strip()
+    role = str(session.get("panel_role") or "main").strip() or "main"
+    if not username:
+        session.clear()
+        return False
+
+    sid = str(session.get("panel_session_id") or "").strip()
+    if not sid:
+        register_panel_login_session(username, role)
+        return True
+
+    with _panel_login_sessions_lock:
+        if not PANEL_LOGIN_SESSIONS_PATH.exists():
+            session.clear()
+            return False
+        store = _load_panel_login_sessions_store()
+        sessions = store["sessions"]
+        rec = sessions.get(sid)
+        if not isinstance(rec, dict):
+            session.clear()
+            return False
+        rec_user = str(rec.get("user") or "").strip()
+        if not rec_user or rec_user.lower() != username.lower():
+            session.clear()
+            return False
+
+        now_dt = datetime.now(timezone.utc)
+        last_seen_dt = iso_to_dt(str(rec.get("last_seen_at") or ""))
+        touch_sec = (now_dt - last_seen_dt).total_seconds() if last_seen_dt else None
+        if touch_sec is None or touch_sec >= PANEL_LOGIN_SESSIONS_TOUCH_MIN_SEC:
+            rec["last_seen_at"] = now_dt.isoformat()
+            rec["last_seen_ip"] = _client_ip()
+            sessions[sid] = rec
+            _save_panel_login_sessions_store(store)
+
+    return True
+
+
+def panel_login_sessions_for_current_admin(*, limit: int = 50) -> list[dict]:
+    """
+    Активные “успешные” сессии панели (серверный реестр login cookie).
+    Показываем только тем, кто авторизован под тем же логином панели.
+    """
+    # Гарантируем, что запись для текущей cookie существует (включая старые cookie без panel_session_id).
+    if not panel_session_ok():
+        return []
+
+    username = str(session.get("panel_username") or "").strip()
+    if not username:
+        return []
+
+    cur_sid = str(session.get("panel_session_id") or "").strip()
+
+    with _panel_login_sessions_lock:
+        if not PANEL_LOGIN_SESSIONS_PATH.exists():
+            return []
+        store = _load_panel_login_sessions_store()
+        sessions = store["sessions"]
+        out: list[dict] = []
+        for sid, rec in sessions.items():
+            if not isinstance(rec, dict):
+                continue
+            rec_user = str(rec.get("user") or "").strip()
+            if not rec_user or rec_user.lower() != username.lower():
+                continue
+            out.append(_panel_session_view(rec, sid=sid, is_current=bool(cur_sid and sid == cur_sid)))
+
+        out.sort(key=lambda x: (x.get("created_at") or ""), reverse=True)
+        if limit and len(out) > limit:
+            out = out[:limit]
+        return out
 
 
 def _legacy_basic_proxy() -> bool:
@@ -716,6 +1449,22 @@ def _legacy_basic_login_landing(target: str) -> Response:
 
 def _legacy_basic_logout_response() -> Response:
     """Basic без сессии: Clear-Site-Data (Chromium) + страница без авто-редиректа (иначе браузер снова шлёт Basic на /panel/)."""
+    # В legacy-basic может быть не вызван обработчик /logout, поэтому чистим реестр здесь.
+    try:
+        sid = str(session.get("panel_session_id") or "").strip()
+        if sid and PANEL_LOGIN_SESSIONS_PATH.exists():
+            with _panel_login_sessions_lock:
+                store = json.loads(PANEL_LOGIN_SESSIONS_PATH.read_text(encoding="utf-8")) or {}
+                sessions = store.get("sessions")
+                if isinstance(sessions, dict):
+                    sessions.pop(sid, None)
+                PANEL_LOGIN_SESSIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+                tmp_path = PANEL_LOGIN_SESSIONS_PATH.with_suffix(".tmp")
+                tmp_path.write_text(json.dumps(store, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+                os.replace(str(tmp_path), str(PANEL_LOGIN_SESSIONS_PATH))
+    except Exception:
+        pass
+
     session.clear()
     loc = url_for("hy2.index")
     ae = html.escape(loc, quote=True)
@@ -764,11 +1513,26 @@ def api_json_unauthorized() -> Response:
     )
 
 
+def requires_main_admin(func):
+    @wraps(func)
+    @requires_auth
+    def wrapper(*args, **kwargs):
+        if not is_main_panel_admin():
+            return render_index_page(error_message="Доступ только для главного администратора.")
+        return func(*args, **kwargs)
+
+    return wrapper
+
+
 def requires_auth(func):
     @wraps(func)
     def wrapper(*args, **kwargs):
         if _legacy_basic_proxy():
             if panel_basic_auth_ok():
+                session["panel_auth"] = True
+                session["panel_role"] = "main"
+                session.pop("sub_admin_id", None)
+                session["panel_username"] = get_panel_credentials()[0]
                 return func(*args, **kwargs)
             return basic_auth_challenge_response()
         if panel_session_ok():
@@ -2878,8 +3642,8 @@ def update_user_ip_observations(stats_users: dict) -> dict:
         since_dt = last_scan_at - timedelta(seconds=2)
     since_str = since_dt.astimezone().strftime("%Y-%m-%d %H:%M:%S")
 
-    proc = subprocess.run(
-        ["journalctl", "-u", HY2_SERVICE, "--since", since_str, "--no-pager", "-o", "cat"],
+    proc = _run_journalctl(
+        ["-u", HY2_SERVICE, "--since", since_str, "--no-pager", "-o", "cat"],
         capture_output=True,
         text=True,
     )
@@ -3484,6 +4248,7 @@ def update_single_user_limits(
     speed_down_mbps: float | None,
     max_connections: int | None,
 ) -> None:
+    assert_user_manage_access(username)
     cfg = load_hy2_config()
     up = cfg["auth"]["userpass"]
     state = load_user_state()
@@ -3593,6 +4358,8 @@ def enforce_limits_if_needed() -> None:
     for username in list(up.keys()):
         if username in protected:
             continue
+        if not user_visible_to_current_session(username):
+            continue
         stats_key = str(username).strip().lower()
         reason = evaluate_limit_reason(username, stats_key, meta_users, stats, now)
         if not reason:
@@ -3640,8 +4407,11 @@ def write_config_with_backup_and_restart(cfg: dict) -> None:
     try:
         with open(tmp_path, "w", encoding="utf-8") as f:
             yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
-        os.chmod(tmp_path, old_stat.st_mode)
-        os.chown(tmp_path, old_stat.st_uid, old_stat.st_gid)
+        try:
+            os.chmod(tmp_path, old_stat.st_mode)
+            os.chown(tmp_path, old_stat.st_uid, old_stat.st_gid)
+        except OSError:
+            pass
         os.replace(tmp_path, HY2_CONFIG)
     finally:
         if os.path.exists(tmp_path):
@@ -3665,6 +4435,8 @@ def build_users_view() -> tuple[list[dict], list[dict], dict]:
     hidden_ui = hy2_ui_hidden_usernames()
     for username, password in sorted(cfg["auth"]["userpass"].items()):
         if str(username).strip().lower() in hidden_ui:
+            continue
+        if not user_visible_to_current_session(username):
             continue
         stats_key = str(username).strip().lower()
         ip_info = ip_users.get(stats_key, {}) if isinstance(ip_users.get(stats_key, {}), dict) else {}
@@ -3690,9 +4462,13 @@ def build_users_view() -> tuple[list[dict], list[dict], dict]:
         speed_down_mbps = info.get("speed_down_mbps")
         max_connections = info.get("max_connections")
         remaining_h, usage_percent = calc_limit_view(t["total"], traffic_limit_bytes)
+        owner_info = user_owner_display(username)
         active.append(
             {
                 "username": username,
+                "owner_kind": owner_info["owner_kind"],
+                "owner_id": owner_info["owner_id"],
+                "owner_label": owner_info["owner_label"],
                 "url": make_client_url(
                     username,
                     str(password),
@@ -3737,6 +4513,8 @@ def build_users_view() -> tuple[list[dict], list[dict], dict]:
     for username in sorted(disabled_map.keys()):
         if str(username).strip().lower() in hidden_ui:
             continue
+        if not user_visible_to_current_session(username):
+            continue
         rec = disabled_map.get(username, {})
         password = rec.get("password", "")
         url = ""
@@ -3766,9 +4544,13 @@ def build_users_view() -> tuple[list[dict], list[dict], dict]:
         speed_down_mbps = info.get("speed_down_mbps")
         max_connections = info.get("max_connections")
         remaining_h, usage_percent = calc_limit_view(t["total"], traffic_limit_bytes)
+        owner_info = user_owner_display(username)
         disabled.append(
             {
                 "username": username,
+                "owner_kind": owner_info["owner_kind"],
+                "owner_id": owner_info["owner_id"],
+                "owner_label": owner_info["owner_label"],
                 "disabled_at": rec.get("disabled_at", ""),
                 "disabled_reason": rec.get("reason", ""),
                 "url": make_client_url(
@@ -3808,6 +4590,16 @@ def build_users_view() -> tuple[list[dict], list[dict], dict]:
                 "is_disabled": True,
             }
         )
+    if is_sub_panel_admin():
+        visible = active + disabled
+        stats["online_users"] = sum(1 for u in visible if u.get("is_online"))
+        stats["online_connections"] = sum(int(u.get("online_count", 0) or 0) for u in visible)
+        stats["sum_rx"] = sum(int(u.get("rx", 0) or 0) for u in visible)
+        stats["sum_tx"] = sum(int(u.get("tx", 0) or 0) for u in visible)
+        stats["sum_total"] = stats["sum_rx"] + stats["sum_tx"]
+        stats["sum_rx_h"] = human_bytes(stats["sum_rx"])
+        stats["sum_tx_h"] = human_bytes(stats["sum_tx"])
+        stats["sum_total_h"] = human_bytes(stats["sum_total"])
     return active, disabled, stats
 
 
@@ -3868,6 +4660,10 @@ def apply_users(
     write_config_with_backup_and_restart(cfg)
     write_registry(registry)
     processed_usernames = [item["username"] for item in results]
+    sub_id = get_session_sub_admin_id()
+    if sub_id:
+        for uname in processed_usernames:
+            set_user_owner_id(uname, sub_id)
     apply_limits_to_users(
         processed_usernames,
         traffic_limit_gb,
@@ -3886,6 +4682,7 @@ def toggle_user(username: str, action: str) -> str:
         raise ValueError("Недопустимое имя пользователя")
     if action not in {"disable", "enable"}:
         raise ValueError("Недопустимое действие")
+    assert_user_manage_access(username)
 
     cfg = load_hy2_config()
     up = cfg["auth"]["userpass"]
@@ -3930,13 +4727,15 @@ def disable_all_active_users() -> str:
     now = datetime.now(timezone.utc).isoformat()
     moved = 0
     for username, password in list(up.items()):
+        if not user_visible_to_current_session(username):
+            continue
         disabled[username] = {
             "password": password,
             "disabled_at": now,
             "reason": "bulk_disable_all",
         }
+        up.pop(username, None)
         moved += 1
-    up.clear()
 
     write_config_with_backup_and_restart(cfg)
     save_user_state(state)
@@ -3947,6 +4746,7 @@ def disable_all_active_users() -> str:
 def reset_user_password_random(username: str) -> str:
     if not valid_username(username):
         raise ValueError("Недопустимое имя пользователя")
+    assert_user_manage_access(username)
 
     cfg = load_hy2_config()
     up = cfg["auth"]["userpass"]
@@ -3992,6 +4792,8 @@ def delete_users(scope: str, mode: str, selected: list[str]) -> str:
         if username in seen:
             continue
         seen.add(username)
+        if not user_visible_to_current_session(username):
+            continue
         if not valid_username(username):
             raise ValueError(f"Недопустимое имя пользователя: {username}")
         selected_clean.append(username)
@@ -4006,7 +4808,7 @@ def delete_users(scope: str, mode: str, selected: list[str]) -> str:
         if mode == "selected":
             targets = selected_clean
         else:
-            targets = list(up.keys())
+            targets = [u for u in up.keys() if user_visible_to_current_session(u)]
 
         for username in targets:
             if username in protected:
@@ -4024,7 +4826,7 @@ def delete_users(scope: str, mode: str, selected: list[str]) -> str:
         if mode == "selected":
             targets = selected_clean
         else:
-            targets = list(disabled.keys())
+            targets = [u for u in disabled.keys() if user_visible_to_current_session(u)]
 
         for username in targets:
             if username in protected:
@@ -4043,6 +4845,8 @@ def delete_users(scope: str, mode: str, selected: list[str]) -> str:
     remove_users_from_meta(deleted_usernames)
     remove_users_from_notes(deleted_usernames)
     remove_users_from_ip_state(deleted_usernames)
+    for uname in deleted_usernames:
+        clear_user_owner(uname)
     if changed_active or changed_state:
         cascade_sync_users_best_effort("delete_users")
 
@@ -4125,9 +4929,8 @@ def read_diagnostic_logs(
     lines: list[str] = []
 
     for svc in services:
-        proc = subprocess.run(
+        proc = _run_journalctl(
             [
-                "journalctl",
                 "-u",
                 svc,
                 "--since",
@@ -4332,6 +5135,15 @@ def render_index_page(
         panel_backend = "hysteria"
 
     _direct_state = normalize_direct_state_for_template(read_direct_routing_state())
+    active_sessions = panel_login_sessions_for_current_admin()
+    active_sessions_count = len(active_sessions)
+    active_sessions_devices_count = len(
+        {
+            f"{str(s.get('device_key') or '').strip()}:{str(s.get('platform_key') or '').strip()}"
+            for s in active_sessions
+            if str(s.get("device_key") or "").strip()
+        }
+    )
     return render_template(
         "index.html",
         defaults=merged_defaults,
@@ -4363,6 +5175,15 @@ def render_index_page(
             str(merged_defaults.get("direct_ru_suffixes") or "")
             or str(_direct_state.get("ru_suffixes_text") or "")
         ),
+        panel_is_main_admin=is_main_panel_admin(),
+        panel_is_sub_admin=is_sub_panel_admin(),
+        panel_session_username=get_session_panel_username() or get_panel_credentials()[0],
+        sub_admins=sub_admins_for_template() if is_main_panel_admin() else [],
+        main_pool_users=list_main_pool_usernames() if is_main_panel_admin() else [],
+        active_sessions=active_sessions,
+        active_sessions_count=active_sessions_count,
+        active_sessions_devices_count=active_sessions_devices_count,
+        panel_totp=panel_totp_for_template() if is_main_panel_admin() else {},
     )
 
 
@@ -4390,13 +5211,16 @@ def login():
     if request.method == "GET":
         csrf = secrets.token_hex(16)
         session["login_csrf"] = csrf
+        _clear_totp_pending()
         return render_template(
             "login.html",
             csrf=csrf,
             next_path=safe_next_path(request.args.get("next") or ""),
             default_user="",
             error="",
-            totp_required=panel_totp_required(),
+            info="",
+            totp_required=False,
+            totp_step=False,
         )
 
     ip = _client_ip()
@@ -4410,7 +5234,9 @@ def login():
                 next_path=safe_next_path(request.form.get("next") or ""),
                 default_user=(request.form.get("user") or "").strip(),
                 error="Слишком много неудачных попыток. Подождите несколько минут.",
-                totp_required=panel_totp_required(),
+                info="",
+                totp_required=False,
+                totp_step=False,
             ),
             429,
         )
@@ -4420,61 +5246,163 @@ def login():
     if not expected_csrf or not secrets.compare_digest(str(posted_csrf), str(expected_csrf)):
         csrf = secrets.token_hex(16)
         session["login_csrf"] = csrf
+        _clear_totp_pending()
         return render_template(
             "login.html",
             csrf=csrf,
             next_path=safe_next_path(request.form.get("next") or ""),
             default_user=(request.form.get("user") or "").strip(),
             error="Форма устарела. Обновите страницу и попробуйте снова.",
-            totp_required=panel_totp_required(),
+            info="",
+            totp_required=False,
+            totp_step=False,
         )
 
     u, pw = get_panel_credentials()
     if not pw:
         return Response("PANEL_BASIC_PASS is not configured", status=500)
-    need_totp = panel_totp_required()
-    if need_totp and pyotp is None:
-        csrf = secrets.token_hex(16)
-        session["login_csrf"] = csrf
-        return render_template(
-            "login.html",
-            csrf=csrf,
-            next_path=safe_next_path(request.form.get("next") or ""),
-            default_user=(request.form.get("user") or "").strip(),
-            error="На сервере не установлен пакет pyotp (pip install pyotp).",
-            totp_required=True,
-        )
 
     user_in = (request.form.get("user") or "").strip()
-    pass_in = request.form.get("password") or ""
     totp_in = request.form.get("totp") or ""
+    pass_in = request.form.get("password") or ""
 
-    user_ok = secrets.compare_digest(user_in, u)
-    pass_ok = secrets.compare_digest(pass_in, pw)
-    totp_ok = verify_panel_totp(totp_in) if need_totp else True
+    # Шаг 2: пароль уже проверен, ждём код.
+    pending_ok, pending_role, pending_sub_id = _totp_pending_valid_for(user_in)
+    if pending_ok:
+        need_totp = totp_required_for_username(user_in)
+        if need_totp and pyotp is None:
+            _clear_totp_pending()
+            csrf = secrets.token_hex(16)
+            session["login_csrf"] = csrf
+            return render_template(
+                "login.html",
+                csrf=csrf,
+                next_path=safe_next_path(request.form.get("next") or ""),
+                default_user=user_in,
+                error="На сервере не установлен пакет pyotp (pip install pyotp).",
+                info="",
+                totp_required=True,
+                totp_step=True,
+            )
+        if not need_totp:
+            _clear_totp_pending()
+        else:
+            if not verify_totp_for_username(user_in, totp_in):
+                _login_rate_record_fail(ip)
+                csrf = secrets.token_hex(16)
+                session["login_csrf"] = csrf
+                return render_template(
+                    "login.html",
+                    csrf=csrf,
+                    next_path=safe_next_path(request.form.get("next") or ""),
+                    default_user=user_in,
+                    error="Неверный код 2FA.",
+                    info="",
+                    totp_required=True,
+                    totp_step=True,
+                )
 
-    if not (user_ok and pass_ok and totp_ok):
+            # Успех: завершаем вход.
+            _clear_totp_pending()
+            session.pop("login_csrf", None)
+            session.clear()
+            session["panel_auth"] = True
+            session.permanent = True
+            if pending_role == "sub":
+                session["panel_role"] = "sub"
+                session["sub_admin_id"] = pending_sub_id
+                session["panel_username"] = user_in
+            else:
+                session["panel_role"] = "main"
+                session.pop("sub_admin_id", None)
+                session["panel_username"] = u
+
+            register_panel_login_session(
+                str(session.get("panel_username") or user_in).strip(),
+                str(session.get("panel_role") or "main").strip(),
+            )
+            nxt = safe_next_path(request.form.get("next") or "")
+            return redirect(nxt or url_for("hy2.index"))
+
+    # Шаг 1: проверяем логин/пароль. Если для логина включена 2FA — переключаемся на шаг 2.
+    main_user_ok = secrets.compare_digest(user_in, u)
+    main_pass_ok = secrets.compare_digest(pass_in, pw)
+    main_ok_no_totp = main_user_ok and main_pass_ok
+
+    sub_ok_no_totp = False
+    sub_id = ""
+    if not main_ok_no_totp:
+        sub = find_sub_admin_by_username(user_in)
+        if sub and not sub.get("disabled") and check_password_hash(sub.get("password_hash") or "", pass_in):
+            sub_ok_no_totp = True
+            sub_id = str(sub.get("id") or "").strip()
+
+    if not (main_ok_no_totp or sub_ok_no_totp):
         _login_rate_record_fail(ip)
         csrf = secrets.token_hex(16)
         session["login_csrf"] = csrf
-        err = (
-            "Неверный логин, пароль или код 2FA."
-            if need_totp
-            else "Неверный логин или пароль."
-        )
+        _clear_totp_pending()
         return render_template(
             "login.html",
             csrf=csrf,
             next_path=safe_next_path(request.form.get("next") or ""),
             default_user=user_in,
-            error=err,
-            totp_required=need_totp,
+            error="Неверный логин или пароль.",
+            info="",
+            totp_required=False,
+            totp_step=False,
         )
 
+    need_totp = totp_required_for_username(user_in)
+    if need_totp and pyotp is None:
+        csrf = secrets.token_hex(16)
+        session["login_csrf"] = csrf
+        _clear_totp_pending()
+        return render_template(
+            "login.html",
+            csrf=csrf,
+            next_path=safe_next_path(request.form.get("next") or ""),
+            default_user=user_in,
+            error="На сервере не установлен пакет pyotp (pip install pyotp).",
+            info="",
+            totp_required=True,
+            totp_step=False,
+        )
+
+    if need_totp:
+        role = "main" if main_ok_no_totp else "sub"
+        _start_totp_pending(user_in, role=role, sub_admin_id=sub_id)
+        csrf = secrets.token_hex(16)
+        session["login_csrf"] = csrf
+        return render_template(
+            "login.html",
+            csrf=csrf,
+            next_path=safe_next_path(request.form.get("next") or ""),
+            default_user=user_in,
+            error="",
+            info="Введите код 2FA из приложения.",
+            totp_required=True,
+            totp_step=True,
+        )
+
+    # Нет 2FA — логиним сразу.
     session.pop("login_csrf", None)
     session.clear()
     session["panel_auth"] = True
     session.permanent = True
+    if main_ok_no_totp:
+        session["panel_role"] = "main"
+        session.pop("sub_admin_id", None)
+        session["panel_username"] = u
+    else:
+        session["panel_role"] = "sub"
+        session["sub_admin_id"] = sub_id
+        session["panel_username"] = user_in
+
+    register_panel_login_session(
+        str(session.get("panel_username") or user_in).strip(),
+        str(session.get("panel_role") or "main").strip(),
+    )
     nxt = safe_next_path(request.form.get("next") or "")
     return redirect(nxt or url_for("hy2.index"))
 
@@ -4486,6 +5414,21 @@ def logout():
         if panel_basic_auth_ok():
             return _legacy_basic_logout_response()
         return basic_auth_challenge_response()
+    # Удаляем запись этой сессии, чтобы “logout” тоже отзывал токен.
+    try:
+        sid = str(session.get("panel_session_id") or "").strip()
+        if sid and PANEL_LOGIN_SESSIONS_PATH.exists():
+            with _panel_login_sessions_lock:
+                store = json.loads(PANEL_LOGIN_SESSIONS_PATH.read_text(encoding="utf-8")) or {}
+                sessions = store.get("sessions")
+                if isinstance(sessions, dict):
+                    sessions.pop(sid, None)
+                    PANEL_LOGIN_SESSIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+                    tmp_path = PANEL_LOGIN_SESSIONS_PATH.with_suffix(".tmp")
+                    tmp_path.write_text(json.dumps(store, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+                    os.replace(str(tmp_path), str(PANEL_LOGIN_SESSIONS_PATH))
+    except Exception:
+        pass
     session.clear()
     return redirect(url_for("hy2.login"))
 
@@ -4493,6 +5436,9 @@ def logout():
 @bp.route("/", methods=["GET"])
 @requires_auth
 def index():
+    if panel_session_ok() and not session.get("panel_role"):
+        session["panel_role"] = "main"
+        session["panel_username"] = get_panel_credentials()[0]
     return render_index_page()
 
 
@@ -4707,6 +5653,7 @@ def users_note_handler():
     try:
         if not valid_username(username):
             raise ValueError("Недопустимое имя пользователя")
+        assert_user_manage_access(username)
         cfg = load_hy2_config()
         state = load_user_state()
         if username not in cfg["auth"]["userpass"] and username not in state["disabled"]:
@@ -4730,7 +5677,7 @@ def build_backup_export_filename() -> str:
 
 
 @bp.route("/server/backup/export", methods=["POST"])
-@requires_auth
+@requires_main_admin
 def server_backup_export_handler():
     include_users_limits = _is_checked(request.form.get("backup_include_users_limits"), default=True)
     include_server_settings = _is_checked(request.form.get("backup_include_server_settings"), default=True)
@@ -4782,7 +5729,7 @@ def server_backup_export_handler():
 
 
 @bp.route("/server/backup/import", methods=["POST"])
-@requires_auth
+@requires_main_admin
 def server_backup_import_handler():
     blocked = reject_sing_box_mutations()
     if blocked is not None:
@@ -4869,7 +5816,7 @@ def server_backup_import_handler():
 
 
 @bp.route("/server/bandwidth", methods=["POST"])
-@requires_auth
+@requires_main_admin
 def server_bandwidth_handler():
     blocked = reject_sing_box_mutations()
     if blocked is not None:
@@ -4890,8 +5837,170 @@ def server_bandwidth_handler():
         return render_index_page(error_message=str(e))
 
 
+@bp.route("/server/sub-admins/create", methods=["POST"])
+@requires_main_admin
+def server_sub_admins_create_handler():
+    username = request.form.get("sub_admin_username", "").strip()
+    password = request.form.get("sub_admin_password", "")
+    password2 = request.form.get("sub_admin_password_confirm", "")
+    try:
+        if password != password2:
+            raise ValueError("Повтор пароля не совпадает")
+        create_sub_admin(username, password)
+        return render_index_page(ok_message=f"Дополнительный администратор «{username}» создан.")
+    except Exception as e:
+        return render_index_page(error_message=str(e))
+
+
+@bp.route("/server/sub-admins/delete", methods=["POST"])
+@requires_main_admin
+def server_sub_admins_delete_handler():
+    admin_id = request.form.get("sub_admin_id", "").strip()
+    try:
+        item = find_sub_admin_by_id(admin_id)
+        if not item:
+            raise ValueError("Администратор не найден")
+        uname = str(item.get("username", ""))
+        delete_sub_admin(admin_id)
+        return render_index_page(
+            ok_message=f"Администратор «{uname}» удалён. Его клиенты остались на сервере и видны главному администратору."
+        )
+    except Exception as e:
+        return render_index_page(error_message=str(e))
+
+
+@bp.route("/server/sub-admins/password", methods=["POST"])
+@requires_main_admin
+def server_sub_admins_password_handler():
+    admin_id = request.form.get("sub_admin_id", "").strip()
+    password = request.form.get("sub_admin_reset_password", "") or request.form.get("sub_admin_password", "")
+    password2 = request.form.get("sub_admin_reset_password_confirm", "") or request.form.get("sub_admin_password_confirm", "")
+    try:
+        if password != password2:
+            raise ValueError("Повтор пароля не совпадает")
+        reset_sub_admin_password(admin_id, password)
+        item = find_sub_admin_by_id(admin_id)
+        uname = str((item or {}).get("username", ""))
+        return render_index_page(ok_message=f"Пароль администратора «{uname}» обновлён.")
+    except Exception as e:
+        return render_index_page(error_message=str(e))
+
+
+@bp.route("/server/sub-admins/transfer", methods=["POST"])
+@requires_main_admin
+def server_sub_admins_transfer_handler():
+    admin_id = request.form.get("sub_admin_id", "").strip()
+    selected = request.form.getlist("transfer_users")
+    try:
+        item = find_sub_admin_by_id(admin_id)
+        if not item:
+            raise ValueError("Администратор не найден")
+        n = transfer_users_to_sub_admin(selected, admin_id)
+        uname = str(item.get("username", ""))
+        return render_index_page(ok_message=f"Передано клиентов администратору «{uname}»: {n}.")
+    except Exception as e:
+        return render_index_page(error_message=str(e))
+
+
+@bp.route("/server/sub-admins/release", methods=["POST"])
+@requires_main_admin
+def server_sub_admins_release_handler():
+    admin_id = request.form.get("sub_admin_id", "").strip()
+    selected = request.form.getlist("release_users")
+    try:
+        item = find_sub_admin_by_id(admin_id)
+        if not item:
+            raise ValueError("Администратор не найден")
+        n = release_users_to_main(selected, from_sub_admin_id=admin_id)
+        uname = str(item.get("username", ""))
+        return render_index_page(ok_message=f"Возвращено главному администратору клиентов: {n} (снята привязка к «{uname}»).")
+    except Exception as e:
+        return render_index_page(error_message=str(e))
+
+
+@bp.route("/server/panel-totp/setup", methods=["POST"])
+@requires_main_admin
+def server_panel_totp_setup_handler():
+    current_pw = request.form.get("panel_current_password", "")
+    try:
+        if pyotp is None:
+            raise ValueError("На сервере не установлен пакет pyotp (pip install pyotp).")
+        if panel_totp_enabled():
+            raise ValueError("2FA уже включена. Сначала отключите её.")
+        _verify_panel_password_or_raise(current_pw)
+        session[TOTP_SETUP_SESSION_KEY] = pyotp.random_base32()
+        return render_index_page(
+            ok_message="Секрет 2FA создан. Отсканируйте QR-код и подтвердите кодом из приложения."
+        )
+    except Exception as e:
+        return render_index_page(error_message=str(e))
+
+
+@bp.route("/server/panel-totp/enable", methods=["POST"])
+@requires_main_admin
+def server_panel_totp_enable_handler():
+    current_pw = request.form.get("panel_current_password", "")
+    totp_code = request.form.get("totp_code", "")
+    try:
+        if pyotp is None:
+            raise ValueError("На сервере не установлен пакет pyotp.")
+        if panel_totp_enabled():
+            raise ValueError("2FA уже включена.")
+        secret = panel_totp_setup_secret_pending()
+        if not secret:
+            raise ValueError("Настройка не начата. Нажмите «Настроить 2FA» и повторите.")
+        _verify_panel_password_or_raise(current_pw)
+        if not verify_totp_code_for_secret(secret, totp_code):
+            raise ValueError("Неверный код из приложения. Проверьте время на телефоне и попробуйте снова.")
+        enable_panel_totp_in_env(secret)
+        session.pop(TOTP_SETUP_SESSION_KEY, None)
+        return render_index_page(
+            ok_message="2FA включена. При следующем входе главного администратора потребуется код из приложения."
+        )
+    except Exception as e:
+        return render_index_page(error_message=str(e))
+
+
+@bp.route("/server/panel-totp/cancel-setup", methods=["POST"])
+@requires_main_admin
+def server_panel_totp_cancel_setup_handler():
+    session.pop(TOTP_SETUP_SESSION_KEY, None)
+    return render_index_page(ok_message="Настройка 2FA отменена.")
+
+
+@bp.route("/server/panel-totp/disable", methods=["POST"])
+@requires_main_admin
+def server_panel_totp_disable_handler():
+    current_pw = request.form.get("panel_current_password", "")
+    totp_code = request.form.get("totp_code", "")
+    try:
+        if not panel_totp_enabled():
+            raise ValueError("2FA не включена.")
+        _verify_panel_password_or_raise(current_pw)
+        if not verify_panel_totp(totp_code):
+            raise ValueError("Неверный код 2FA.")
+        disable_panel_totp_in_env()
+        session.pop(TOTP_SETUP_SESSION_KEY, None)
+        return render_index_page(ok_message="2FA отключена.")
+    except Exception as e:
+        return render_index_page(error_message=str(e))
+
+
+@bp.route("/server/panel-totp/qr.png", methods=["GET"])
+@requires_main_admin
+def server_panel_totp_qr_handler():
+    secret = panel_totp_setup_secret_pending()
+    if not secret:
+        return Response("Настройка 2FA не начата", status=404)
+    account = get_panel_credentials()[0]
+    uri = panel_totp_provisioning_uri(secret, account)
+    if not uri:
+        return Response("2FA недоступна", status=503)
+    return Response(make_qr_png(uri), mimetype="image/png")
+
+
 @bp.route("/server/panel-auth", methods=["POST"])
-@requires_auth
+@requires_main_admin
 def server_panel_auth_handler():
     current_pw = request.form.get("panel_current_password", "")
     new_user = request.form.get("panel_new_user", "").strip()
@@ -4920,8 +6029,49 @@ def server_panel_auth_handler():
         return render_index_page(error_message=str(e))
 
 
-@bp.route("/server/panel-url-prefix", methods=["POST"])
+@bp.route("/server/panel-sessions/revoke", methods=["POST"])
 @requires_auth
+def server_panel_sessions_revoke_handler():
+    sid = str(request.form.get("session_id") or "").strip()
+    if not sid:
+        return render_index_page(error_message="Не задан session_id")
+    username = str(get_session_panel_username() or "").strip()
+    if not username:
+        return render_index_page(error_message="Нет данных о текущем пользователе сессии")
+
+    try:
+        if PANEL_LOGIN_SESSIONS_PATH.exists():
+            with _panel_login_sessions_lock:
+                store = json.loads(PANEL_LOGIN_SESSIONS_PATH.read_text(encoding="utf-8")) or {}
+                sessions = store.get("sessions")
+                if not isinstance(sessions, dict):
+                    sessions = {}
+                    store["sessions"] = sessions
+                rec = sessions.get(sid)
+                if not isinstance(rec, dict):
+                    raise ValueError("Сессия не найдена")
+                rec_user = str(rec.get("user") or "").strip()
+                if not rec_user or rec_user.lower() != username.lower():
+                    raise ValueError("Нет доступа к этой сессии")
+                sessions.pop(sid, None)
+
+                PANEL_LOGIN_SESSIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+                tmp_path = PANEL_LOGIN_SESSIONS_PATH.with_suffix(".tmp")
+                tmp_path.write_text(json.dumps(store, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+                os.replace(str(tmp_path), str(PANEL_LOGIN_SESSIONS_PATH))
+
+        cur_sid = str(session.get("panel_session_id") or "").strip()
+        if cur_sid and cur_sid == sid:
+            session.clear()
+            return redirect(url_for("hy2.login", session_revoked="1"))
+
+        return render_index_page(ok_message="Сессия отозвана.")
+    except Exception as e:
+        return render_index_page(error_message=str(e))
+
+
+@bp.route("/server/panel-url-prefix", methods=["POST"])
+@requires_main_admin
 def server_panel_url_prefix_handler():
     action = (request.form.get("panel_prefix_action") or "update").strip().lower()
     secret_raw = request.form.get("panel_prefix_secret", "")
@@ -4971,7 +6121,7 @@ def server_panel_url_prefix_handler():
 
 
 @bp.route("/server/cascade/register", methods=["POST"])
-@requires_auth
+@requires_main_admin
 def server_cascade_register_handler():
     token_raw = (request.form.get("cascade_token") or "").strip()
     mark_exit = (request.form.get("cascade_mark_exit") or "") in {"1", "on", "true", "yes"}
@@ -5017,7 +6167,7 @@ def server_cascade_register_handler():
 
 
 @bp.route("/server/cascade/toggle", methods=["POST"])
-@requires_auth
+@requires_main_admin
 def server_cascade_toggle_handler():
     node_id = (request.form.get("node_id") or "").strip()
     action = (request.form.get("action") or "").strip().lower()
@@ -5055,7 +6205,7 @@ def server_cascade_toggle_handler():
 
 
 @bp.route("/server/cascade/delete", methods=["POST"])
-@requires_auth
+@requires_main_admin
 def server_cascade_delete_handler():
     node_id = (request.form.get("node_id") or "").strip()
     try:
@@ -5074,7 +6224,7 @@ def server_cascade_delete_handler():
 
 
 @bp.route("/server/cascade/sync-now", methods=["POST"])
-@requires_auth
+@requires_main_admin
 def server_cascade_sync_now_handler():
     try:
         cascade_sync_users_best_effort("manual_sync_ui")
@@ -5084,7 +6234,7 @@ def server_cascade_sync_now_handler():
 
 
 @bp.route("/server/cascade/pool-all-exits", methods=["POST"])
-@requires_auth
+@requires_main_admin
 def server_cascade_pool_all_exits_handler():
     """Помечает cascade_exit для всех включённых узлов с ролью из CASCADE_EXIT_POOL_ROLES."""
     pool_roles = _cascade_exit_pool_roles_set()
@@ -5124,7 +6274,7 @@ def server_cascade_pool_all_exits_handler():
 
 
 @bp.route("/server/cascade/hop", methods=["POST"])
-@requires_auth
+@requires_main_admin
 def server_cascade_hop_handler():
     node_id = (request.form.get("node_id") or "").strip()
     hy2_server = (request.form.get("hy2_server") or "").strip()
@@ -5176,7 +6326,7 @@ def server_cascade_hop_handler():
 
 
 @bp.route("/server/cascade/apply-singbox", methods=["POST"])
-@requires_auth
+@requires_main_admin
 def server_cascade_apply_singbox_handler():
     mode_raw = (request.form.get("singbox_lb_mode") or "").strip().lower()
     try:
@@ -5204,7 +6354,7 @@ def server_cascade_apply_singbox_handler():
 
 
 @bp.route("/server/direct-routing", methods=["POST"])
-@requires_auth
+@requires_main_admin
 def server_direct_routing_handler():
     explicit_json_raw = (request.form.get("direct_explicit_domains_json") or "").strip()
     suffixes_raw = ""
@@ -5324,7 +6474,7 @@ def server_direct_routing_handler():
 
 
 @bp.route("/server/direct-routing/whitelist-sync", methods=["POST"])
-@requires_auth
+@requires_main_admin
 def server_direct_routing_whitelist_sync_handler():
     try:
         store = load_direct_whitelist_store()
@@ -5344,7 +6494,7 @@ def server_direct_routing_whitelist_sync_handler():
 
 
 @bp.route("/server/direct-routing/whitelist-auto", methods=["POST"])
-@requires_auth
+@requires_main_admin
 def server_direct_routing_whitelist_auto_handler():
     try:
         store = load_direct_whitelist_store()
@@ -5363,7 +6513,7 @@ def server_direct_routing_whitelist_auto_handler():
 
 
 @bp.route("/server/panel-timezone", methods=["POST"])
-@requires_auth
+@requires_main_admin
 def server_panel_timezone_handler():
     tz = request.form.get("panel_timezone", "").strip()
     try:
@@ -5376,7 +6526,7 @@ def server_panel_timezone_handler():
 
 
 @bp.route("/server/exclusions", methods=["POST"])
-@requires_auth
+@requires_main_admin
 def server_exclusions_handler():
     blocked = reject_sing_box_mutations()
     if blocked is not None:
@@ -5396,7 +6546,7 @@ def server_exclusions_handler():
 
 
 @bp.route("/server/blacklist/add", methods=["POST"])
-@requires_auth
+@requires_main_admin
 def server_blacklist_add_handler():
     blocked = reject_sing_box_mutations()
     if blocked is not None:
@@ -5414,7 +6564,7 @@ def server_blacklist_add_handler():
 
 
 @bp.route("/server/blacklist/remove", methods=["POST"])
-@requires_auth
+@requires_main_admin
 def server_blacklist_remove_handler():
     blocked = reject_sing_box_mutations()
     if blocked is not None:
@@ -5431,7 +6581,7 @@ def server_blacklist_remove_handler():
 
 
 @bp.route("/server/https-stub/apply", methods=["POST"])
-@requires_auth
+@requires_main_admin
 def server_https_stub_apply_handler():
     raw = request.form.get("https_stub_html", "")
     if not isinstance(raw, str):
@@ -5451,7 +6601,7 @@ def server_https_stub_apply_handler():
 
 
 @bp.route("/server/https-stub/revert", methods=["POST"])
-@requires_auth
+@requires_main_admin
 def server_https_stub_revert_handler():
     try:
         write_https_root_stub_atomic(bundled_default_https_root_stub_html())
@@ -5463,7 +6613,7 @@ def server_https_stub_revert_handler():
 
 
 @bp.route("/logs/search", methods=["POST"])
-@requires_auth
+@requires_main_admin
 def logs_search_handler():
     service = request.form.get("logs_service", "both").strip().lower()
     level = request.form.get("logs_level", "all").strip().lower()
@@ -5568,7 +6718,7 @@ def api_live_handler():
 
 
 @bp.route("/api/server/direct-routing-explicit", methods=["GET"])
-@requires_auth
+@requires_main_admin
 def api_direct_routing_explicit_state_handler():
     state = read_direct_routing_state()
     payload = {
@@ -5579,7 +6729,7 @@ def api_direct_routing_explicit_state_handler():
 
 
 @bp.route("/api/server/direct-routing-whitelist", methods=["GET"])
-@requires_auth
+@requires_main_admin
 def api_direct_routing_whitelist_state_handler():
     store = load_direct_whitelist_store()
     payload = {

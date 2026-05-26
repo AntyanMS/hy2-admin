@@ -19,6 +19,27 @@
   </span>
 </span>
 {%- endmacro %}
+{% macro session_browser_icon(key) -%}
+<svg class="sess-icon sess-icon--browser sess-icon--{{ key }}" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.2"/><path fill="currentColor" d="M5 6.5h6v4H5z" opacity=".35"/><path fill="none" stroke="currentColor" stroke-width="1" d="M5 6.5h6"/></svg>
+{%- endmacro %}
+{% macro session_os_icon(key) -%}
+{% if key == 'windows' %}<svg class="sess-icon sess-icon--os sess-icon--windows" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M3 3.5 7 3v5.5H3zm0 9V8.5h4V13l-4 .5zm5-9 5-.6V7.5H8zm0 9.5V8.5h5V12l-5 .5z"/></svg>
+{% elif key == 'macos' or key == 'ios' %}<svg class="sess-icon sess-icon--os sess-icon--apple" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M11.2 8.4c.02 2.1 1.85 2.8 1.87 2.81-.02.06-.29 1.01-1 2.01-.6.84-1.22 1.67-2.2 1.69-.96.02-1.27-.57-2.37-.57-1.1 0-1.44.55-2.35.59-.95.04-1.67-.96-2.27-1.8-1.24-1.8-2.18-5.08-.9-7.3.65-1.12 1.82-1.83 3.08-1.85.96-.02 1.87.64 2.37.64.49 0 1.41-.79 2.38-.67.4.02 1.53.16 2.25 1.24-.06.04-1.34.78-1.32 2.35zM9.55 3.1c.53-.64 1.34-1.07 1.18-1.9-1.14.05-2.52.76-3.33 1.7-.49.57-.92 1.48-.68 2.35 1.2.09 2.43-.61 2.83-1.15z"/></svg>
+{% elif key == 'android' %}<svg class="sess-icon sess-icon--os sess-icon--android" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M6 3.2 5.4 1.8a.6.6 0 1 1 1.1-.4l.7 1.5a4.8 4.8 0 0 1 2.6 0l.7-1.5a.6.6 0 1 1 1.1.4L10 3.2A4 4 0 0 1 12 7v3.5a1.5 1.5 0 0 1-1.5 1.5h-1v1.2a.8.8 0 1 1-1.6 0V12H8v1.2a.8.8 0 0 1-1.6 0V12H5.5A1.5 1.5 0 0 1 4 10.5V7a4 4 0 0 1 2-3.8zM6.2 6.3a.7.7 0 1 0 0-1.4.7.7 0 0 0 0 1.4zm3.6 0a.7.7 0 1 0 0-1.4.7.7 0 0 0 0 1.4z"/></svg>
+{% elif key == 'linux' %}<svg class="sess-icon sess-icon--os sess-icon--linux" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8.1 2.5c2.2.2 3.6 1.6 3.8 3.6-.9-.2-1.7-.1-2.4.2.3-.8.2-1.5-.4-2.1-.5-.5-1.1-.7-1.9-.7-.3 1.1-.9 2-1.8 2.7-.5.4-1 .7-1.5.9.5 1.6 1.4 2.8 2.6 3.6-.3.8-.5 1.6-.5 2.5 0 1.2.9 2.1 2.1 2.1h.8c1.2 0 2.1-.9 2.1-2.1 0-.9-.2-1.7-.5-2.5 1.2-.8 2.1-2 2.6-3.6-.5-.2-1-.5-1.5-.9-1-.8-1.6-1.9-1.8-3.2z"/></svg>
+{% else %}<svg class="sess-icon sess-icon--os sess-icon--other" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="4" width="11" height="8" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>{% endif %}
+{%- endmacro %}
+{% macro session_device_icon(key) -%}
+{% if key == 'mobile' %}<svg class="sess-icon sess-icon--device sess-icon--mobile" viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="2" width="6" height="12" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="8" cy="12" r=".6" fill="currentColor"/></svg>
+{% elif key == 'tablet' %}<svg class="sess-icon sess-icon--device sess-icon--tablet" viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="2.5" width="9" height="11" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="8" cy="11.8" r=".5" fill="currentColor"/></svg>
+{% else %}<svg class="sess-icon sess-icon--device sess-icon--desktop" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="3" width="12" height="8" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/><path fill="currentColor" d="M6.5 13h3v1h-3z"/></svg>{% endif %}
+{%- endmacro %}
+{% macro session_ip_icon() -%}
+<svg class="sess-icon sess-icon--ip" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 1.5a5.5 5.5 0 0 0-5.2 7.3L2.7 11l1.4 1.4 2.2-2.2A5.5 5.5 0 1 0 8 1.5zm0 3a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5z"/></svg>
+{%- endmacro %}
+{% macro session_time_icon() -%}
+<svg class="sess-icon sess-icon--time" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.2"/><path fill="currentColor" d="M8 4.5V8l2.5 1.5"/></svg>
+{%- endmacro %}
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -370,12 +391,82 @@
     details.user-card, details.sg-inbound-card { border: 1px solid var(--border); border-radius: 8px; margin: 8px 0; background: var(--bg-soft); }
     details.user-card > summary, details.sg-inbound-card > summary { cursor: pointer; list-style: none; padding: 10px 12px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
     details.user-card > summary::-webkit-details-marker, details.sg-inbound-card > summary::-webkit-details-marker { display: none; }
-    details.user-card > summary::after, details.sg-inbound-card > summary::after { content: "▸"; float: right; color: var(--muted); }
-    details.user-card[open] > summary::after, details.sg-inbound-card[open] > summary::after { content: "▾"; }
+    details.user-card > summary::after { content: "▸"; color: var(--muted); flex-shrink: 0; order: 4; margin-left: 4px; }
+    details.user-card[open] > summary::after { content: "▾"; }
+    details.sg-inbound-card > summary::after { content: "▸"; float: right; color: var(--muted); }
+    details.sg-inbound-card[open] > summary::after { content: "▾"; }
     .user-body { border-top: 1px solid var(--border); padding: 10px; }
     .url-text { display: block; margin-top: 8px; white-space: pre-wrap; word-break: break-all; }
-    .summary-name { flex: 1; min-width: 0; }
-    .summary-select { display: inline-flex; align-items: center; margin-right: 18px; }
+    .summary-name { flex: 1; min-width: 0; order: 1; }
+    .summary-owner { margin-left: auto; flex-shrink: 0; order: 2; padding-left: 8px; }
+    .owner-badge {
+      font-size: 0.72rem;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 999px;
+      vertical-align: middle;
+      white-space: nowrap;
+      display: inline-block;
+    }
+    .owner-badge--main { background: rgba(134, 239, 172, 0.12); color: #86efac; border: 1px solid rgba(134, 239, 172, 0.35); }
+    .owner-badge--sub { background: rgba(147, 197, 253, 0.12); color: #93c5fd; border: 1px solid rgba(147, 197, 253, 0.35); }
+    .owner-badge--unknown { background: rgba(251, 191, 36, 0.12); color: #fcd34d; border: 1px solid rgba(251, 191, 36, 0.35); }
+    details.sub-admin-card { border: 1px solid var(--border); border-radius: 8px; margin: 10px 0; background: var(--bg-soft); }
+    details.sub-admin-card > summary { cursor: pointer; list-style: none; padding: 10px 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    details.sub-admin-card > summary::-webkit-details-marker { display: none; }
+    details.sub-admin-card > summary::after { content: "▸"; margin-left: auto; color: var(--muted); }
+    details.sub-admin-card[open] > summary::after { content: "▾"; }
+    .sub-admin-body { padding: 0 12px 12px; border-top: 1px solid rgba(55, 65, 81, 0.35); }
+    .sub-admin-clients { list-style: none; margin: 8px 0 0; padding: 0; }
+    .sub-admin-clients li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid rgba(55, 65, 81, 0.25); }
+    details.transfer-pool-panel { border: 1px solid var(--border); border-radius: 6px; margin: 8px 0; background: rgba(0,0,0,.12); }
+    details.transfer-pool-panel > summary { cursor: pointer; list-style: none; padding: 8px 10px; font-size: 0.9rem; }
+    details.transfer-pool-panel > summary::-webkit-details-marker { display: none; }
+    details.transfer-pool-panel > summary::after { content: "▸"; float: right; color: var(--muted); }
+    details.transfer-pool-panel[open] > summary::after { content: "▾"; }
+    .transfer-pool-panel-body { padding: 0 10px 10px; }
+    .transfer-pool-search { width: 100%; max-width: 320px; margin: 0 0 8px; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); }
+    .transfer-pool-table-wrap { max-height: 220px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; }
+    .transfer-pool-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+    .transfer-pool-table th, .transfer-pool-table td { padding: 6px 10px; text-align: left; border-bottom: 1px solid rgba(55, 65, 81, 0.35); }
+    .transfer-pool-table th { position: sticky; top: 0; background: var(--bg-soft); z-index: 1; }
+    .transfer-pool-table tr:last-child td { border-bottom: none; }
+    details.admin-settings-card,
+    details.panel-sessions-card { border: 1px solid var(--border); border-radius: 8px; margin: 10px 0 0; background: var(--bg-soft); }
+    details.admin-settings-card > summary,
+    details.panel-sessions-card > summary { cursor: pointer; list-style: none; padding: 10px 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 0.95rem; font-weight: 600; }
+    details.admin-settings-card > summary::-webkit-details-marker,
+    details.panel-sessions-card > summary::-webkit-details-marker { display: none; }
+    details.admin-settings-card > summary::after,
+    details.panel-sessions-card > summary::after { content: "▸"; margin-left: auto; color: var(--muted); }
+    details.admin-settings-card[open] > summary::after,
+    details.panel-sessions-card[open] > summary::after { content: "▾"; }
+    .admin-settings-body,
+    .panel-sessions-body { padding: 12px; border-top: 1px solid rgba(55, 65, 81, 0.35); }
+    .panel-sessions-table td { vertical-align: middle; }
+    .summary-pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 999px; border: 1px solid rgba(148, 163, 184, 0.25); background: rgba(15, 23, 42, 0.35); color: #cbd5e1; font-size: 0.82rem; line-height: 1.3; font-weight: 700; }
+    .summary-pill code { font-size: 0.82rem; padding: 0; background: transparent; border: none; color: inherit; }
+    .summary-pill--ok { border-color: rgba(34, 197, 94, 0.35); background: rgba(34, 197, 94, 0.12); color: #86efac; }
+    .summary-pill--warn { border-color: rgba(245, 158, 11, 0.35); background: rgba(245, 158, 11, 0.12); color: #fdba74; }
+    .summary-pill--info { border-color: rgba(59, 130, 246, 0.35); background: rgba(59, 130, 246, 0.12); color: #93c5fd; }
+    .summary-pill--danger { border-color: rgba(239, 68, 68, 0.35); background: rgba(239, 68, 68, 0.12); color: #fca5a5; }
+    .sess-icon { width: 16px; height: 16px; flex-shrink: 0; vertical-align: middle; }
+    .sess-icon--browser.sess-icon--chrome { color: #60a5fa; }
+    .sess-icon--browser.sess-icon--firefox { color: #fb923c; }
+    .sess-icon--browser.sess-icon--edge { color: #38bdf8; }
+    .sess-icon--browser.sess-icon--safari { color: #7dd3fc; }
+    .sess-icon--browser.sess-icon--opera { color: #f87171; }
+    .sess-icon--browser.sess-icon--brave { color: #f97316; }
+    .sess-icon--os { color: #a5b4fc; }
+    .sess-icon--device { color: #86efac; }
+    .sess-icon--ip { color: #fbbf24; }
+    .sess-icon--time { color: #94a3b8; }
+    .sess-cell-icons { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .sess-cell-label { display: inline-flex; align-items: center; gap: 5px; }
+    .sess-cell-sub { display: block; margin-top: 4px; font-size: 0.82rem; }
+    .users-delete-toolbar { display: inline-flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .summary-select { display: none; align-items: center; order: 3; margin-right: 6px; flex-shrink: 0; }
+    body.users-delete-mode .summary-select { display: inline-flex; }
     .summary-select input { margin: 0; width: 16px; height: 16px; }
     .summary-meta { font-size: 12px; color: var(--muted); margin-left: 8px; font-weight: 500; }
     .traffic-meta { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 2px 4px; vertical-align: middle; }
@@ -953,7 +1044,11 @@
   {% endif %}
   <div class="topbar">
     <h1><a href="{{ url_for('hy2.index') }}" class="brand-link">Hysteria2 Clients Admin</a></h1>
-    <div style="display:flex; gap:8px; align-items:center;">
+    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+      <span class="muted" style="font-size:0.9rem;">
+        {{ panel_session_username }}
+        {% if panel_is_sub_admin %}<span style="color:#93c5fd;">· доп. админ</span>{% else %}<span style="color:#86efac;">· главный</span>{% endif %}
+      </span>
       <form method="post" action="{{ url_for('hy2.logout') }}" style="margin:0;">
         <button type="submit" class="secondary-btn">Выйти</button>
       </form>
@@ -961,12 +1056,19 @@
   </div>
 
   {% if not ui_shell_only %}
+  {% if panel_is_sub_admin %}
+  <div class="box" style="margin-bottom:12px; border-color:#2563eb;">
+    <p class="muted" style="margin:0; font-size:0.9rem;">Вы вошли как <strong>дополнительный администратор</strong>. Доступны только ваши клиенты и операции с ними.</p>
+  </div>
+  {% endif %}
   <div class="main-tabs-wrap">
     <div class="tabs main-tabs">
       <button type="button" id="tab-main-dashboard-btn" class="tab-btn active">Панель</button>
       <button type="button" id="tab-main-users-btn" class="tab-btn">Пользователи</button>
+      {% if panel_is_main_admin %}
       <button type="button" id="tab-main-server-btn" class="tab-btn">Настройки сервера</button>
       <button type="button" id="tab-main-logs-btn" class="tab-btn">Логи</button>
+      {% endif %}
     </div>
   </div>
   <div id="tab-main-dashboard" class="tab-panel active">
@@ -1099,7 +1201,11 @@
     <form id="active-delete-form" method="post" action="{{ url_for('hy2.users_delete_handler') }}">
       <input type="hidden" name="scope" value="active">
       <button class="emergency-stop-btn inline" type="submit" formaction="{{ url_for('hy2.users_disable_all_handler') }}" formmethod="post" onclick="return confirm('Отключить ВСЕХ активных пользователей?');">⛔ Отключить всех</button>
-      <button class="danger inline" type="submit" name="mode" value="selected">Удалить выбранных</button>
+      <span class="users-delete-toolbar">
+        <button type="button" id="users-delete-start-btn" class="danger inline">Удалить выбранных</button>
+        <button type="submit" id="users-delete-confirm-btn" class="danger inline" name="mode" value="selected" style="display:none;">Удалить</button>
+        <button type="button" id="users-delete-cancel-btn" class="secondary-btn" style="display:none;">Отменить</button>
+      </span>
     </form>
   </div>
 
@@ -1119,7 +1225,7 @@
     {% if active_users %}
       {% for u in active_users %}
         <details class="user-card" data-username="{{ u.username }}" data-total="{{ u.total }}" data-online="{{ 1 if u.is_online else 0 }}" data-disabled="0">
-          <summary><span class="summary-name">{{ u.username }}{% if u.is_online %}<span class="status-dot online" data-user-dot="{{ u.username }}" title="Онлайн: {{ u.online_count }}"></span>{% else %}<span class="status-dot offline" data-user-dot="{{ u.username }}" title="Оффлайн"></span>{% endif %}{% if u.online_count and u.online_count > 1 %}<span class="conn-badge" data-user-online-count="{{ u.username }}" title="Одновременных подключений">x{{ u.online_count }}</span>{% else %}<span class="conn-badge" data-user-online-count="{{ u.username }}" style="display:none;"></span>{% endif %}{{ user_traffic_meta(u) }}</span><label class="summary-select" title="Выбрать для удаления"><input form="active-delete-form" type="checkbox" name="selected_users" value="{{ u.username }}"></label></summary>
+          <summary><span class="summary-name">{{ u.username }}{% if u.is_online %}<span class="status-dot online" data-user-dot="{{ u.username }}" title="Онлайн: {{ u.online_count }}"></span>{% else %}<span class="status-dot offline" data-user-dot="{{ u.username }}" title="Оффлайн"></span>{% endif %}{% if u.online_count and u.online_count > 1 %}<span class="conn-badge" data-user-online-count="{{ u.username }}" title="Одновременных подключений">x{{ u.online_count }}</span>{% else %}<span class="conn-badge" data-user-online-count="{{ u.username }}" style="display:none;"></span>{% endif %}{{ user_traffic_meta(u) }}</span>{% if panel_is_main_admin and u.owner_label %}<span class="summary-owner"><span class="owner-badge owner-badge--{{ u.owner_kind }}" title="Владелец: {{ u.owner_label }}">{{ u.owner_label }}</span></span>{% endif %}<label class="summary-select" title="Выбрать для удаления"><input form="active-delete-form" type="checkbox" name="selected_users" value="{{ u.username }}"></label></summary>
           <div class="user-body">
             <form method="post" action="{{ url_for('hy2.users_toggle_handler') }}" class="inline">
               <input type="hidden" name="username" value="{{ u.username }}">
@@ -1215,7 +1321,7 @@
     {% if disabled_users %}
       {% for u in disabled_users %}
         <details class="user-card" data-username="{{ u.username }}" data-total="{{ u.total }}" data-online="0" data-disabled="1">
-          <summary>{{ u.username }}<span class="status-dot disabled" data-user-dot="{{ u.username }}" title="Клиент выключен"></span><span class="conn-badge" data-user-online-count="{{ u.username }}" style="display:none;"></span>{{ user_traffic_meta(u) }}</summary>
+          <summary><span class="summary-name">{{ u.username }}<span class="status-dot disabled" data-user-dot="{{ u.username }}" title="Клиент выключен"></span><span class="conn-badge" data-user-online-count="{{ u.username }}" style="display:none;"></span>{{ user_traffic_meta(u) }}</span>{% if panel_is_main_admin and u.owner_label %}<span class="summary-owner"><span class="owner-badge owner-badge--{{ u.owner_kind }}" title="Владелец: {{ u.owner_label }}">{{ u.owner_label }}</span></span>{% endif %}</summary>
           <div class="user-body">
             <p class="muted">Отключен: {{ u.disabled_at or 'неизвестно' }}</p>
             <form method="post" action="{{ url_for('hy2.users_toggle_handler') }}" class="inline">
@@ -1777,6 +1883,10 @@
       </div>
 
       <div id="server-tab-admin" class="tab-panel server-sub-panel">
+
+      <details class="admin-settings-card">
+        <summary><span>Смена логина или пароля</span></summary>
+        <div class="admin-settings-body">
       <form method="post" action="{{ url_for('hy2.server_panel_auth_handler') }}" autocomplete="off">
         <div class="server-grid">
           <div>
@@ -1800,11 +1910,194 @@
         </div>
         <div class="actions"><button type="submit">Сохранить логин и пароль</button></div>
       </form>
-      <hr style="border-color:#374151; opacity:.5; margin:18px 0;">
-      <h3 style="margin:0 0 8px; font-size:1rem; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-        Секрет в URL панели
+        </div>
+      </details>
+
+      {% if panel_is_main_admin %}
+      {% set pt = panel_totp if panel_totp is mapping else {} %}
+      <details class="admin-settings-card"{% if pt.get('pending_setup') %} open{% endif %}>
+        <summary>
+          <span>Двухфакторная аутентификация (2FA)</span>
+          {% if pt.get('enabled') %}<span class="summary-pill summary-pill--ok">включена</span>{% elif pt.get('pending_setup') %}<span class="summary-pill summary-pill--warn">настройка</span>{% endif %}
+        </summary>
+        <div class="admin-settings-body">
+      {% if not pt.get('pyotp_available', true) %}
+      <p class="muted" style="margin:0 0 12px;padding:10px 12px;border:1px solid #b45309;border-radius:8px;background:#1c1410;color:#fdba74;">На сервере не установлен пакет <code>pyotp</code>. Установите зависимости панели (<code>pip install pyotp</code>) и перезапустите сервис.</p>
+      {% elif pt.get('enabled') %}
+      <p class="muted" style="margin:0 0 12px; font-size:0.9rem;">2FA <strong>включена</strong> для входа главного администратора (<code>{{ pt.account }}</code>, приложение: {{ pt.issuer }}). Секрет: <code>{{ pt.secret_masked }}</code></p>
+      <p class="muted" style="margin:0 0 12px; font-size:0.85rem;">Пока 2FA включена, дополнительные администраторы <strong>не смогут</strong> войти в панель (только главный с кодом).</p>
+      <form method="post" action="{{ url_for('hy2.server_panel_totp_disable_handler') }}" autocomplete="off">
+        <div class="server-grid">
+          <div>
+            <label>Текущий пароль</label>
+            <input type="password" name="panel_current_password" required placeholder="обязательно" autocomplete="current-password">
+          </div>
+          <div>
+            <label>Код 2FA (6 цифр)</label>
+            <input type="text" name="totp_code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" minlength="6" required placeholder="000000" autocomplete="one-time-code">
+          </div>
+        </div>
+        <div class="actions"><button type="submit" class="danger-btn">Отключить 2FA</button></div>
+      </form>
+      {% elif pt.get('pending_setup') %}
+      <p class="muted" style="margin:0 0 10px; font-size:0.9rem;">Отсканируйте QR в Google Authenticator, Aegis, 1Password и т.п., либо введите ключ вручную. Затем введите <strong>6-значный код</strong> для подтверждения.</p>
+      <div style="display:flex; flex-wrap:wrap; gap:16px; align-items:flex-start; margin-bottom:12px;">
+        <img src="{{ url_for('hy2.server_panel_totp_qr_handler') }}?t={{ pt.setup_secret_display|default('', true)|replace(' ', '') }}" alt="QR-код 2FA" width="200" height="200" style="background:#fff; padding:8px; border-radius:8px;">
+        <div>
+          <p class="muted" style="margin:0 0 6px; font-size:0.85rem;">Учётная запись: <code>{{ pt.account }}</code> · эмитент: <code>{{ pt.issuer }}</code></p>
+          <p class="muted" style="margin:0; font-size:0.85rem;">Секрет (ручной ввод):</p>
+          <p style="margin:4px 0 0;"><code style="font-size:0.95rem; letter-spacing:0.04em;">{{ pt.setup_secret_display }}</code></p>
+        </div>
+      </div>
+      <form method="post" action="{{ url_for('hy2.server_panel_totp_enable_handler') }}" autocomplete="off" style="margin-bottom:8px;">
+        <div class="server-grid">
+          <div>
+            <label>Текущий пароль</label>
+            <input type="password" name="panel_current_password" required placeholder="обязательно" autocomplete="current-password">
+          </div>
+          <div>
+            <label>Код из приложения</label>
+            <input type="text" name="totp_code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" minlength="6" required placeholder="000000" autocomplete="one-time-code">
+          </div>
+        </div>
+        <div class="actions"><button type="submit">Подтвердить и включить 2FA</button></div>
+      </form>
+      <form method="post" action="{{ url_for('hy2.server_panel_totp_cancel_setup_handler') }}" style="margin:0;">
+        <button type="submit" class="secondary-btn">Отменить настройку</button>
+      </form>
+      {% else %}
+      <p class="muted" style="margin:0 0 12px; font-size:0.9rem;">После включения при входе главного администратора потребуется одноразовый код из приложения-аутентификатора (TOTP).</p>
+      <form method="post" action="{{ url_for('hy2.server_panel_totp_setup_handler') }}" autocomplete="off">
+        <div class="server-grid">
+          <div>
+            <label>Текущий пароль</label>
+            <input type="password" name="panel_current_password" required placeholder="для начала настройки" autocomplete="current-password">
+          </div>
+        </div>
+        <div class="actions"><button type="submit">Настроить 2FA</button></div>
+      </form>
+      {% endif %}
+        </div>
+      </details>
+      {% endif %}
+
+      <details class="admin-settings-card">
+        <summary>
+          <span>Дополнительные администраторы</span>
+          <span class="summary-pill summary-pill--info">{{ sub_admins|length }}</span>
+        </summary>
+        <div class="admin-settings-body">
+      <p class="muted" style="margin:0 0 12px; font-size:0.9rem;">Отдельный вход в панель. Видят и управляют <strong>только своими</strong> клиентами (созданными под своим логином). Клиенты главного администратора им недоступны.</p>
+      {% if sub_admins %}
+      <div style="margin-bottom:14px;">
+        {% for sa in sub_admins %}
+        <details class="sub-admin-card">
+          <summary>
+            <code>{{ sa.username }}</code>{% if sa.disabled %} <span class="muted">(выкл.)</span>{% endif %}
+            <span class="muted">· клиентов: <strong>{{ sa.client_count }}</strong></span>
+            <span class="muted">· создан: {{ sa.created_at[:19] if sa.created_at else '—' }}</span>
+          </summary>
+          <div class="sub-admin-body">
+            <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:10px 0 8px;">
+              <form method="post" action="{{ url_for('hy2.server_sub_admins_password_handler') }}" style="display:inline-flex; flex-wrap:wrap; gap:6px; align-items:center; margin:0;">
+                <input type="hidden" name="sub_admin_id" value="{{ sa.id }}">
+                <input type="password" name="sub_admin_reset_password" placeholder="новый пароль" minlength="8" required autocomplete="new-password" style="max-width:140px;">
+                <input type="password" name="sub_admin_reset_password_confirm" placeholder="повтор" minlength="8" required autocomplete="new-password" style="max-width:120px;">
+                <button type="submit" class="secondary-btn">Сменить пароль</button>
+              </form>
+              <form method="post" action="{{ url_for('hy2.server_sub_admins_delete_handler') }}" style="display:inline; margin:0;" onsubmit="return confirm('Удалить администратора «{{ sa.username }}»? Его клиенты останутся на сервере (станут клиентами главного).');">
+                <input type="hidden" name="sub_admin_id" value="{{ sa.id }}">
+                <button type="submit" class="danger-btn">Удалить администратора</button>
+              </form>
+            </div>
+            <h4 style="margin:12px 0 6px; font-size:0.92rem;">Клиенты администратора</h4>
+            {% if sa.clients %}
+            <ul class="sub-admin-clients">
+              {% for cname in sa.clients %}
+              <li>
+                <code>{{ cname }}</code>
+                <form method="post" action="{{ url_for('hy2.server_sub_admins_release_handler') }}" style="margin:0;" onsubmit="return confirm('Вернуть клиента «{{ cname }}» главному администратору?');">
+                  <input type="hidden" name="sub_admin_id" value="{{ sa.id }}">
+                  <input type="hidden" name="release_users" value="{{ cname }}">
+                  <button type="submit" class="secondary-btn" style="font-size:0.8rem; padding:4px 8px;">Вернуть главному</button>
+                </form>
+              </li>
+              {% endfor %}
+            </ul>
+            {% else %}
+            <p class="muted" style="margin:0;">Пока нет привязанных клиентов.</p>
+            {% endif %}
+            {% if main_pool_users %}
+            <h4 style="margin:14px 0 6px; font-size:0.92rem;">Передать клиентов от главного администратора</h4>
+            <p class="muted" style="margin:0 0 6px; font-size:0.85rem;">Клиенты с меткой «главный» в разделе «Пользователи».</p>
+            <form method="post" action="{{ url_for('hy2.server_sub_admins_transfer_handler') }}">
+              <input type="hidden" name="sub_admin_id" value="{{ sa.id }}">
+              <details class="transfer-pool-panel">
+                <summary>Выбрать клиентов ({{ main_pool_users|length }})</summary>
+                <div class="transfer-pool-panel-body">
+                  <input type="search" class="transfer-pool-search" placeholder="Поиск по логину" data-transfer-target="transfer-pool-{{ sa.id }}" autocomplete="off">
+                  <div class="transfer-pool-table-wrap" id="transfer-pool-{{ sa.id }}">
+                    <table class="transfer-pool-table">
+                      <thead>
+                        <tr>
+                          <th style="width:36px;"><input type="checkbox" class="transfer-pool-select-all" data-transfer-target="transfer-pool-{{ sa.id }}" title="Выбрать все видимые"></th>
+                          <th>Логин</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {% for cname in main_pool_users %}
+                        <tr data-uname="{{ cname|lower }}">
+                          <td><input type="checkbox" name="transfer_users" value="{{ cname }}"></td>
+                          <td><code>{{ cname }}</code></td>
+                        </tr>
+                        {% endfor %}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div class="actions" style="margin-top:8px;"><button type="submit">Передать выбранных</button></div>
+                </div>
+              </details>
+            </form>
+            {% else %}
+            <p class="muted" style="margin:10px 0 0; font-size:0.85rem;">Нет свободных клиентов главного администратора для передачи.</p>
+            {% endif %}
+          </div>
+        </details>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="muted" style="margin:0 0 12px;">Пока нет дополнительных администраторов.</p>
+      {% endif %}
+      <form method="post" action="{{ url_for('hy2.server_sub_admins_create_handler') }}" autocomplete="off" style="margin-top:8px;">
+        <div class="server-grid">
+          <div>
+            <label>Логин доп. администратора</label>
+            <input type="text" name="sub_admin_username" placeholder="reseller1" maxlength="32" required pattern="[A-Za-z0-9._-]{3,32}">
+          </div>
+          <div>
+            <label>Пароль (мин. 8 символов)</label>
+            <input type="password" name="sub_admin_password" minlength="8" required autocomplete="new-password">
+          </div>
+          <div>
+            <label>Повтор пароля</label>
+            <input type="password" name="sub_admin_password_confirm" minlength="8" required autocomplete="new-password">
+          </div>
+        </div>
+        <div class="actions"><button type="submit">Создать администратора</button></div>
+      </form>
+        </div>
+      </details>
+
+      <details class="admin-settings-card">
+        <summary>
+          <span>Секрет в URL панели</span>
+          <span class="summary-pill summary-pill--info">{% if panel_url_prefix_display == "/panel" %}<code>/panel/</code>{% elif panel_url_prefix_display %}<code>{{ panel_url_prefix_display }}</code>{% else %}корень{% endif %}</span>
+        </summary>
+        <div class="admin-settings-body">
+      <p class="muted" style="margin:0 0 8px; font-size:0.9rem;">
         <span class="panel-prefix-help" tabindex="0" role="img" aria-label="Справка: скрытый префикс пути" title="Скрытый префикс пути (hex 16–64 символов или UUID перед /panel), задаётся в PANEL_URL_PREFIX в /opt/hy2-admin/.env. Nginx должен проксировать тот же путь.">?</span>
-      </h3>
+        Скрытый префикс пути в URL панели (переменная <code>PANEL_URL_PREFIX</code> в <code>.env</code>).
+      </p>
       <p class="muted" style="margin:0 0 12px; font-size:0.9rem;">Текущий префикс (из .env на диске): {% if panel_url_prefix_display == "/panel" %}публичный путь <code>/panel/</code> (без секретного slug){% elif panel_url_prefix_display %}<code>{{ panel_url_prefix_display }}</code>{% else %}<strong>нет</strong> — панель в корне сайта{% endif %}</p>
       {% if panel_insecure_debug_strip_prefix %}
       <p class="muted" style="margin:0 0 12px;padding:10px 12px;border:1px solid #b45309;border-radius:8px;background:#1c1410;font-size:0.9rem;color:#fdba74;">Отладка: <code>PANEL_INSECURE_DEBUG_STRIP_PREFIX</code> — nginx шлёт <code>{{ panel_insecure_debug_strip_prefix }}</code>, приложение монтируется в корне. Для продакшена задайте <code>PANEL_URL_PREFIX</code> и удалите эту переменную из <code>.env</code>.</p>
@@ -1823,6 +2116,73 @@
           <button type="submit" name="panel_prefix_action" value="remove" class="danger-btn" onclick="return confirm('Убрать секретный slug? Панель перейдёт на публичный путь /panel/ (редирект на https://…/panel/).');">Убрать секрет → /panel/</button>
         </div>
       </form>
+        </div>
+      </details>
+
+      <details class="panel-sessions-card">
+        <summary>
+          <span>Активные сессии</span>
+          <span class="summary-pill summary-pill--info">устройств: {{ active_sessions_devices_count }}</span>
+          <span class="summary-pill summary-pill--info">сессий: {{ active_sessions_count }}</span>
+        </summary>
+        <div class="panel-sessions-body">
+          <p class="muted" style="margin:10px 0 12px; font-size:0.85rem;">Успешные входы в панель под вашим логином. Можно отозвать любую сессию — на другом устройстве доступ пропадёт при следующем запросе.</p>
+          {% if active_sessions %}
+          <div style="overflow-x:auto;">
+            <table class="transfer-pool-table panel-sessions-table" style="width:100%;">
+              <thead>
+                <tr>
+                  <th>Клиент</th>
+                  <th>IP</th>
+                  <th>Вход</th>
+                  <th>Активность</th>
+                  <th style="width:110px;">Действия</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for s in active_sessions %}
+                <tr>
+                  <td>
+                    <span class="sess-cell-label">
+                      {{ session_browser_icon(s.browser_key) }}
+                      <strong>{{ s.browser_name }}</strong>{% if s.is_current %} <span class="muted">(текущая)</span>{% endif %}
+                    </span>
+                    <span class="sess-cell-sub muted sess-cell-icons">
+                      {{ session_os_icon(s.platform_key) }}
+                      <span>{{ s.platform_name }}</span>
+                      <span aria-hidden="true">·</span>
+                      {{ session_device_icon(s.device_key) }}
+                      <span>{{ s.device_name }}</span>
+                    </span>
+                  </td>
+                  <td>
+                    <span class="sess-cell-label">{{ session_ip_icon() }}<code>{{ s.ip or '—' }}</code></span>
+                    {% if s.last_seen_ip and s.last_seen_ip != s.ip %}
+                    <span class="sess-cell-sub muted">сейчас: <code>{{ s.last_seen_ip }}</code></span>
+                    {% endif %}
+                  </td>
+                  <td class="muted">
+                    <span class="sess-cell-label">{{ session_time_icon() }}{{ s.created_at[:19] if s.created_at else '—' }}</span>
+                  </td>
+                  <td class="muted">
+                    <span class="sess-cell-label">{{ session_time_icon() }}{{ s.last_seen_at[:19] if s.last_seen_at else '—' }}</span>
+                  </td>
+                  <td>
+                    <form method="post" action="{{ url_for('hy2.server_panel_sessions_revoke_handler') }}" style="margin:0;" onsubmit="return confirm('Отозвать эту сессию?');">
+                      <input type="hidden" name="session_id" value="{{ s.id }}">
+                      <button type="submit" class="danger-btn" style="font-size:0.82rem; padding:4px 10px;">Отозвать</button>
+                    </form>
+                  </td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% else %}
+          <p class="muted" style="margin:10px 0 0;">Активных сессий нет. Войдите с другого браузера или устройства — запись появится здесь.</p>
+          {% endif %}
+        </div>
+      </details>
       </div>
     </div>
   </div>
@@ -2040,6 +2400,7 @@
       const openCreateUsersBtn = document.getElementById("open-create-users-modal");
       const closeCreateUsersBtn = document.getElementById("close-create-users-modal");
       const uiStateKey = "hy2-admin-ui-state-v1";
+      const panelIsMainAdmin = {{ panel_is_main_admin | tojson }};
 
       function getMainTabName() {
         if (tabMainUsers && tabMainUsers.classList.contains("active")) return "users";
@@ -2076,6 +2437,9 @@
       });
 
       function setMainTab(name) {
+        if (!panelIsMainAdmin && (name === "server" || name === "logs")) {
+          name = "users";
+        }
         if (name !== "users") closeCreateUsersModal();
         const dash = name === "dashboard";
         const usr = name === "users";
@@ -2288,6 +2652,10 @@
       }
 
       (function applySavedUiState() {
+        if (!panelIsMainAdmin) {
+          setMainTab("users");
+          return;
+        }
         try {
           var raw = sessionStorage.getItem(uiStateKey);
           if (!raw) return;
@@ -2396,6 +2764,102 @@
       if (sortSelect) sortSelect.addEventListener("change", applyAllFilters);
       if (onlineOnlyInput) onlineOnlyInput.addEventListener("change", applyAllFilters);
       applyAllFilters();
+
+      const activeDeleteForm = document.getElementById("active-delete-form");
+      const usersDeleteStartBtn = document.getElementById("users-delete-start-btn");
+      const usersDeleteConfirmBtn = document.getElementById("users-delete-confirm-btn");
+      const usersDeleteCancelBtn = document.getElementById("users-delete-cancel-btn");
+      let usersDeleteMode = false;
+
+      function getActiveDeleteCheckboxes() {
+        return Array.from(document.querySelectorAll("#tab-active .summary-select input[type=checkbox]"));
+      }
+
+      function countActiveDeleteSelected() {
+        return getActiveDeleteCheckboxes().filter(function (cb) { return cb.checked; }).length;
+      }
+
+      function updateUsersDeleteToolbar() {
+        const n = countActiveDeleteSelected();
+        const showConfirm = usersDeleteMode && n > 1;
+        if (usersDeleteStartBtn) {
+          usersDeleteStartBtn.style.display = usersDeleteMode && showConfirm ? "none" : "";
+        }
+        if (usersDeleteConfirmBtn) {
+          usersDeleteConfirmBtn.style.display = showConfirm ? "" : "none";
+        }
+        if (usersDeleteCancelBtn) {
+          usersDeleteCancelBtn.style.display = usersDeleteMode ? "" : "none";
+        }
+      }
+
+      function setUsersDeleteMode(on) {
+        usersDeleteMode = !!on;
+        document.body.classList.toggle("users-delete-mode", usersDeleteMode);
+        if (!usersDeleteMode) {
+          getActiveDeleteCheckboxes().forEach(function (cb) { cb.checked = false; });
+        }
+        updateUsersDeleteToolbar();
+      }
+
+      if (usersDeleteStartBtn) {
+        usersDeleteStartBtn.addEventListener("click", function () {
+          setUsersDeleteMode(true);
+        });
+      }
+      if (usersDeleteCancelBtn) {
+        usersDeleteCancelBtn.addEventListener("click", function () {
+          setUsersDeleteMode(false);
+        });
+      }
+      getActiveDeleteCheckboxes().forEach(function (cb) {
+        cb.addEventListener("change", updateUsersDeleteToolbar);
+      });
+      if (activeDeleteForm && usersDeleteConfirmBtn) {
+        activeDeleteForm.addEventListener("submit", function (ev) {
+          if (ev.submitter === usersDeleteConfirmBtn) {
+            const n = countActiveDeleteSelected();
+            if (n < 2) {
+              ev.preventDefault();
+              return;
+            }
+            if (!confirm("Удалить выбранных пользователей (" + n + ")?")) {
+              ev.preventDefault();
+            }
+            return;
+          }
+          if (usersDeleteMode && ev.submitter && ev.submitter !== usersDeleteConfirmBtn) {
+            if (ev.submitter.id === "users-delete-start-btn" || ev.submitter === usersDeleteStartBtn) {
+              ev.preventDefault();
+            }
+          }
+        });
+      }
+
+      document.querySelectorAll(".transfer-pool-search").forEach(function (inp) {
+        inp.addEventListener("input", function () {
+          const wrap = document.getElementById(inp.getAttribute("data-transfer-target") || "");
+          if (!wrap) return;
+          const q = (inp.value || "").trim().toLowerCase();
+          wrap.querySelectorAll("tbody tr").forEach(function (row) {
+            const name = (row.getAttribute("data-uname") || "").toLowerCase();
+            row.style.display = !q || name.indexOf(q) !== -1 ? "" : "none";
+          });
+        });
+      });
+
+      document.querySelectorAll(".transfer-pool-select-all").forEach(function (master) {
+        master.addEventListener("change", function () {
+          const wrap = document.getElementById(master.getAttribute("data-transfer-target") || "");
+          if (!wrap) return;
+          const checked = master.checked;
+          wrap.querySelectorAll("tbody tr").forEach(function (row) {
+            if (row.style.display === "none") return;
+            const cb = row.querySelector('input[type="checkbox"][name="transfer_users"]');
+            if (cb) cb.checked = checked;
+          });
+        });
+      });
 
       async function copyText(text) {
         if (navigator.clipboard && navigator.clipboard.writeText) {
