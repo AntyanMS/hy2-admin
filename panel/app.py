@@ -2104,6 +2104,9 @@ def get_hy2_stats(cfg: dict) -> dict:
 
 
 _hy2_agg_rate_prev: dict = {}
+_hy2_user_rate_prev: dict = {}
+_hy2_throughput_cache: dict = {}
+STAT_TOP_N = 10
 
 
 def format_speed_mbps_label(bytes_per_sec: float) -> str:
@@ -2140,6 +2143,135 @@ def hy2_aggregate_throughput_labels(sum_rx: int, sum_tx: int) -> tuple[str, str]
     tx_l = format_speed_mbps_label(tx_bps)
     _hy2_agg_rate_prev = {"t": now, "rx": rx, "tx": tx, "rx_l": rx_l, "tx_l": tx_l}
     return rx_l, tx_l
+
+
+def _throughput_empty_payload() -> dict:
+    return {
+        "rate_upload_h": "—",
+        "rate_download_h": "—",
+        "rate_upload_bps": 0.0,
+        "rate_download_bps": 0.0,
+        "top_download": [],
+        "top_upload": [],
+        "top_rx_total": [],
+        "top_tx_total": [],
+        "top_total": [],
+        "top_online": [],
+    }
+
+
+def build_live_throughput(users: dict[str, dict]) -> dict:
+    """Честная скорость сервера и топ клиентов по дельте per-user RX/TX (Hysteria trafficStats)."""
+    global _hy2_user_rate_prev, _hy2_throughput_cache
+    hidden = hy2_ui_hidden_usernames()
+    now = time.monotonic()
+    filtered: dict[str, dict] = {}
+    for key, rec in (users or {}).items():
+        if not isinstance(rec, dict):
+            continue
+        uname = str(key or "").strip().lower()
+        if not uname or uname in hidden:
+            continue
+        filtered[uname] = rec
+
+    if not _hy2_user_rate_prev.get("_ready"):
+        snap = {"_ready": True, "_t": now}
+        for uname, rec in filtered.items():
+            snap[uname] = {
+                "rx": int(rec.get("rx", 0) or 0),
+                "tx": int(rec.get("tx", 0) or 0),
+            }
+        _hy2_user_rate_prev = snap
+        _throughput_cache = _throughput_empty_payload()
+        return _throughput_empty_payload()
+
+    dt = now - float(_hy2_user_rate_prev.get("_t", now) or now)
+    if dt < 0.35 and _throughput_cache:
+        return _throughput_cache
+
+    total_rx_bps = 0.0
+    total_tx_bps = 0.0
+    per_user: list[dict] = []
+    new_prev: dict = {"_ready": True, "_t": now}
+
+    for uname, rec in filtered.items():
+        rx = int(rec.get("rx", 0) or 0)
+        tx = int(rec.get("tx", 0) or 0)
+        prev = _hy2_user_rate_prev.get(uname) or {"rx": rx, "tx": tx}
+        prev_rx = int(prev.get("rx", rx) or 0)
+        prev_tx = int(prev.get("tx", tx) or 0)
+        if dt > 0 and rx >= prev_rx and tx >= prev_tx:
+            rx_bps = (rx - prev_rx) / dt
+            tx_bps = (tx - prev_tx) / dt
+        else:
+            rx_bps = 0.0
+            tx_bps = 0.0
+        total_rx_bps += rx_bps
+        total_tx_bps += tx_bps
+        per_user.append(
+            {
+                "username": uname,
+                "rx_bps": rx_bps,
+                "tx_bps": tx_bps,
+                "rx": rx,
+                "tx": tx,
+                "total": rx + tx,
+                "online_count": int(rec.get("online_count", 0) or 0),
+                "is_online": bool(rec.get("is_online")),
+            }
+        )
+        new_prev[uname] = {"rx": rx, "tx": tx}
+
+    _hy2_user_rate_prev = new_prev
+
+    def _top_rate(items: list[dict], bps_key: str) -> list[dict]:
+        rows = sorted(items, key=lambda x: float(x.get(bps_key, 0) or 0), reverse=True)
+        out: list[dict] = []
+        for row in rows[:STAT_TOP_N]:
+            bps = float(row.get(bps_key, 0) or 0)
+            if bps <= 0:
+                continue
+            out.append({"username": row["username"], "rate_h": format_speed_mbps_label(bps), "bps": bps})
+        return out
+
+    def _top_bytes(items: list[dict], byte_key: str) -> list[dict]:
+        rows = sorted(items, key=lambda x: int(x.get(byte_key, 0) or 0), reverse=True)
+        out: list[dict] = []
+        for row in rows[:STAT_TOP_N]:
+            val = int(row.get(byte_key, 0) or 0)
+            if val <= 0:
+                continue
+            out.append({"username": row["username"], "value_h": human_bytes(val), "bytes": val})
+        return out
+
+    def _top_online(items: list[dict]) -> list[dict]:
+        rows = sorted(
+            [x for x in items if int(x.get("online_count", 0) or 0) > 0],
+            key=lambda x: int(x.get("online_count", 0) or 0),
+            reverse=True,
+        )
+        out: list[dict] = []
+        for row in rows[:STAT_TOP_N]:
+            cnt = int(row.get("online_count", 0) or 0)
+            if cnt <= 0:
+                continue
+            out.append({"username": row["username"], "value_h": f"{cnt} подк.", "count": cnt})
+        return out
+
+    payload = {
+        "rate_upload_h": format_speed_mbps_label(total_rx_bps),
+        "rate_download_h": format_speed_mbps_label(total_tx_bps),
+        "rate_upload_bps": total_rx_bps,
+        "rate_download_bps": total_tx_bps,
+        "top_download": _top_rate(per_user, "tx_bps"),
+        "top_upload": _top_rate(per_user, "rx_bps"),
+        "top_rx_total": _top_bytes(per_user, "rx"),
+        "top_tx_total": _top_bytes(per_user, "tx"),
+        "top_total": _top_bytes(per_user, "total"),
+        "top_online": _top_online(per_user),
+    }
+    _throughput_cache = payload
+    return payload
 
 
 def write_registry(entries: list[dict]) -> None:
@@ -6671,6 +6803,14 @@ def api_live_handler():
                 "online_connections": 0,
                 "rate_download_h": "—",
                 "rate_upload_h": "—",
+                "rate_download_bps": 0,
+                "rate_upload_bps": 0,
+                "top_download": [],
+                "top_upload": [],
+                "top_rx_total": [],
+                "top_tx_total": [],
+                "top_total": [],
+                "top_online": [],
                 "gateway_traffic_note": "",
             },
             "users": {},
@@ -6692,13 +6832,11 @@ def api_live_handler():
             "traffic_limit_h": u.get("traffic_limit_h", ""),
             "traffic_remaining_h": u.get("traffic_remaining_h", ""),
             "traffic_usage_percent": int(u.get("traffic_usage_percent", 0) or 0),
+            "current_ips": u.get("current_ips") or [],
         }
-    rate_up_h, rate_down_h = "—", "—"
+    live_tp = _throughput_empty_payload()
     if stats.get("enabled"):
-        sum_rx = int(stats.get("sum_rx", 0) or 0)
-        sum_tx = int(stats.get("sum_tx", 0) or 0)
-        # RX = от клиентов к серверу (отдача абонентов), TX = к клиентам (скачивание абонентов)
-        rate_up_h, rate_down_h = hy2_aggregate_throughput_labels(sum_rx, sum_tx)
+        live_tp = build_live_throughput(stats.get("users") or {})
 
     payload = {
         "panel_backend": "hysteria",
@@ -6708,8 +6846,16 @@ def api_live_handler():
             "sum_total_h": stats.get("sum_total_h", "0 B"),
             "online_users": int(stats.get("online_users", 0) or 0),
             "online_connections": int(stats.get("online_connections", 0) or 0),
-            "rate_download_h": rate_down_h,
-            "rate_upload_h": rate_up_h,
+            "rate_download_h": live_tp.get("rate_download_h", "—"),
+            "rate_upload_h": live_tp.get("rate_upload_h", "—"),
+            "rate_download_bps": float(live_tp.get("rate_download_bps", 0) or 0),
+            "rate_upload_bps": float(live_tp.get("rate_upload_bps", 0) or 0),
+            "top_download": live_tp.get("top_download") or [],
+            "top_upload": live_tp.get("top_upload") or [],
+            "top_rx_total": live_tp.get("top_rx_total") or [],
+            "top_tx_total": live_tp.get("top_tx_total") or [],
+            "top_total": live_tp.get("top_total") or [],
+            "top_online": live_tp.get("top_online") or [],
             "gateway_traffic_note": str(stats.get("gateway_traffic_note", "")),
         },
         "users": users,

@@ -86,6 +86,7 @@
       pointer-events: none;
     }
     body > * { position: relative; z-index: 1; }
+    body > .site-footer { z-index: 0; }
     .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
     textarea, input {
       width: 100%;
@@ -511,11 +512,84 @@
     .limit-fill { height: 100%; background: linear-gradient(90deg, #22c55e, #84cc16); width: 0%; transition: width 0.25s ease; }
     .limit-fill.warn { background: linear-gradient(90deg, #f59e0b, #f97316); }
     .limit-fill.danger { background: linear-gradient(90deg, #ef4444, #dc2626); }
-    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); gap: 8px; margin-bottom: 10px; }
-    .stat-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: #111827; }
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); gap: 8px; margin-bottom: 10px; overflow: visible; position: relative; }
+    .stats-grid:has(.stat-card:hover),
+    .stats-grid:has(.stat-card:focus-within) { z-index: 10; }
+    .stat-card {
+      position: relative;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+      background: #111827;
+      overflow: visible;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    .stat-card:hover, .stat-card:focus-within { z-index: 50; }
+    .stat-card--rate-down { border-color: rgba(59, 130, 246, 0.45); background: linear-gradient(180deg, rgba(59,130,246,0.10), #111827 55%); }
+    .stat-card--rate-up { border-color: rgba(245, 158, 11, 0.45); background: linear-gradient(180deg, rgba(245,158,11,0.10), #111827 55%); }
+    .stat-card--sum-rx { border-color: rgba(168, 85, 247, 0.35); }
+    .stat-card--sum-tx { border-color: rgba(34, 197, 94, 0.35); }
+    .stat-card--sum-total { border-color: rgba(99, 102, 241, 0.35); }
+    .stat-card--online { border-color: rgba(16, 185, 129, 0.35); }
+    .stat-card--rate-down .stat-value { color: #93c5fd; }
+    .stat-card--rate-up .stat-value { color: #fdba74; }
+    .stat-card--sum-rx .stat-value { color: #d8b4fe; }
+    .stat-card--sum-tx .stat-value { color: #86efac; }
+    .stat-card--sum-total .stat-value { color: #a5b4fc; }
+    .stat-card--online .stat-value { color: #6ee7b7; }
     .stat-title { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
     .stat-value { font-size: 18px; font-weight: 700; }
     .stat-hint { font-size: 11px; color: var(--muted); margin-top: 4px; line-height: 1.25; }
+    .stat-tip {
+      display: none;
+      position: absolute;
+      left: 0;
+      top: calc(100% + 6px);
+      width: min(360px, calc(100vw - 32px));
+      min-width: 320px;
+      padding: 10px 12px;
+      border: 1px solid #374151;
+      border-radius: 8px;
+      background-color: #111827;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.72);
+      z-index: 51;
+    }
+    .stat-tip-title,
+    .stat-tip-list {
+      position: relative;
+      z-index: 1;
+      background-color: #111827;
+    }
+    .stat-card:nth-child(5) .stat-tip,
+    .stat-card:nth-child(6) .stat-tip {
+      left: auto;
+      right: 0;
+    }
+    .stat-card:hover .stat-tip, .stat-card:focus-within .stat-tip { display: block; }
+    .stat-tip-title { font-size: 12px; color: #cbd5e1; margin-bottom: 8px; font-weight: 600; }
+    .stat-tip-list { list-style: none; margin: 0; padding: 0; max-height: 300px; overflow-y: auto; }
+    .stat-tip-list li {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      font-size: 12px;
+      padding: 4px 0;
+      border-bottom: 1px solid #374151;
+      background-color: #111827;
+    }
+    .stat-tip-list li:last-child { border-bottom: none; }
+    .stat-tip-list code {
+      flex: 1;
+      min-width: 0;
+      font-size: 12px;
+      background: #1f2937;
+      word-break: normal;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .stat-tip-list .stat-tip-val { color: #f3f4f6; font-weight: 600; white-space: nowrap; flex-shrink: 0; }
     .user-stats { margin: 6px 0 0; font-size: 13px; color: var(--muted); }
     .user-ip-line { margin: 6px 0 0; font-size: 12px; color: var(--muted); word-break: break-word; }
     .user-note { margin-top: 8px; }
@@ -1113,31 +1187,59 @@
     <p class="muted">Статистика Hysteria2 на этом узле не отображается (режим sing-box).</p>
   {% elif stats and stats.enabled %}
     <div class="stats-grid">
-      <div class="stat-card">
+      <div class="stat-card stat-card--rate-down" tabindex="0">
         <div class="stat-title">Скачивание (сейчас)</div>
         <div id="stat-rate-download" class="stat-value">—</div>
         <div class="stat-hint">сервер → клиенты</div>
+        <div class="stat-tip" id="stat-tip-download">
+          <div class="stat-tip-title">Сейчас активнее всего (скачивание)</div>
+          <ul class="stat-tip-list" id="stat-tip-download-list"></ul>
+        </div>
       </div>
-      <div class="stat-card">
+      <div class="stat-card stat-card--rate-up" tabindex="0">
         <div class="stat-title">Отдача (сейчас)</div>
         <div id="stat-rate-upload" class="stat-value">—</div>
         <div class="stat-hint">клиенты → сервер</div>
+        <div class="stat-tip" id="stat-tip-upload">
+          <div class="stat-tip-title">Сейчас активнее всего (отдача)</div>
+          <ul class="stat-tip-list" id="stat-tip-upload-list"></ul>
+        </div>
       </div>
-      <div class="stat-card">
-        <div class="stat-title">Скачано (RX)</div>
+      <div class="stat-card stat-card--sum-rx" tabindex="0">
+        <div class="stat-title">Загружено (RX)</div>
         <div id="stat-sum-rx" class="stat-value">{{ stats.sum_rx_h }}</div>
+        <div class="stat-hint">клиенты → сервер, всего</div>
+        <div class="stat-tip">
+          <div class="stat-tip-title">Топ по загрузке на сервер</div>
+          <ul class="stat-tip-list" id="stat-tip-rx-list"></ul>
+        </div>
       </div>
-      <div class="stat-card">
-        <div class="stat-title">Отдано (TX)</div>
+      <div class="stat-card stat-card--sum-tx" tabindex="0">
+        <div class="stat-title">Скачано (TX)</div>
         <div id="stat-sum-tx" class="stat-value">{{ stats.sum_tx_h }}</div>
+        <div class="stat-hint">сервер → клиенты, всего</div>
+        <div class="stat-tip">
+          <div class="stat-tip-title">Топ по скачиванию с сервера</div>
+          <ul class="stat-tip-list" id="stat-tip-tx-list"></ul>
+        </div>
       </div>
-      <div class="stat-card">
+      <div class="stat-card stat-card--sum-total" tabindex="0">
         <div class="stat-title">Общий трафик</div>
         <div id="stat-sum-total" class="stat-value">{{ stats.sum_total_h }}</div>
+        <div class="stat-hint">RX + TX, всего</div>
+        <div class="stat-tip">
+          <div class="stat-tip-title">Топ по суммарному трафику</div>
+          <ul class="stat-tip-list" id="stat-tip-total-list"></ul>
+        </div>
       </div>
-      <div class="stat-card">
+      <div class="stat-card stat-card--online" tabindex="0">
         <div class="stat-title">Онлайн</div>
         <div id="stat-online" class="stat-value">{{ stats.online_users }} юз. / {{ stats.online_connections }} подкл.</div>
+        <div class="stat-hint">активные клиенты</div>
+        <div class="stat-tip">
+          <div class="stat-tip-title">Больше всего подключений</div>
+          <ul class="stat-tip-list" id="stat-tip-online-list"></ul>
+        </div>
       </div>
     </div>
     {% if stats.error %}<p class="muted">{{ stats.error }}</p>{% endif %}
@@ -1246,7 +1348,7 @@
             </p>
             <p class="user-ip-line">
               Сейчас IP:
-              {% if u.current_ips %}{{ u.current_ips|join(', ') }}{% else %}нет данных{% endif %}
+              <span data-user-current-ips="{{ u.username }}">{% if u.current_ips %}{{ u.current_ips|join(', ') }}{% else %}нет данных{% endif %}</span>
             </p>
             <p class="user-ip-line">
               История IP:
@@ -1343,7 +1445,7 @@
             </p>
             <p class="user-ip-line">
               Сейчас IP:
-              {% if u.current_ips %}{{ u.current_ips|join(', ') }}{% else %}нет данных{% endif %}
+              <span data-user-current-ips="{{ u.username }}">{% if u.current_ips %}{{ u.current_ips|join(', ') }}{% else %}нет данных{% endif %}</span>
             </p>
             <p class="user-ip-line">
               История IP:
@@ -2373,6 +2475,35 @@
       const statOnline = document.getElementById("stat-online");
       const statRateDownload = document.getElementById("stat-rate-download");
       const statRateUpload = document.getElementById("stat-rate-upload");
+      const statTipDownloadList = document.getElementById("stat-tip-download-list");
+      const statTipUploadList = document.getElementById("stat-tip-upload-list");
+      const statTipRxList = document.getElementById("stat-tip-rx-list");
+      const statTipTxList = document.getElementById("stat-tip-tx-list");
+      const statTipTotalList = document.getElementById("stat-tip-total-list");
+      const statTipOnlineList = document.getElementById("stat-tip-online-list");
+      function renderStatTipList(listEl, items, valueKey, emptyText) {
+        if (!listEl) return;
+        listEl.innerHTML = "";
+        const rows = Array.isArray(items) ? items : [];
+        if (!rows.length) {
+          const li = document.createElement("li");
+          li.className = "muted";
+          li.textContent = emptyText || "Нет данных";
+          listEl.appendChild(li);
+          return;
+        }
+        rows.forEach(function (row) {
+          const li = document.createElement("li");
+          const name = document.createElement("code");
+          name.textContent = String(row.username || "—");
+          const val = document.createElement("span");
+          val.className = "stat-tip-val";
+          val.textContent = String(row[valueKey] || row.rate_h || row.value_h || "—");
+          li.appendChild(name);
+          li.appendChild(val);
+          listEl.appendChild(li);
+        });
+      }
       function updateUserTrafficMeta(el, info) {
         if (!el) return;
         const rx = el.querySelector("[data-traffic-rx]");
@@ -2727,42 +2858,91 @@
         return Array.from(container.querySelectorAll("details.user-card"));
       }
 
-      function applyFilterAndSort(container) {
+      function getUserFilterState() {
+        return {
+          q: ((searchInput && searchInput.value) || "").trim().toLowerCase(),
+          onlyOnline: !!(onlineOnlyInput && onlineOnlyInput.checked),
+          mode: (sortSelect && sortSelect.value) || "online_first",
+        };
+      }
+
+      function cardMatchesFilter(card, q, onlyOnline) {
+        const uname = (card.dataset.username || "").toLowerCase();
+        const matchQ = !q || uname.includes(q);
+        const online = Number(card.dataset.online || 0) === 1;
+        const matchO = !onlyOnline || online;
+        return matchQ && matchO;
+      }
+
+      function compareUserCards(a, b, mode) {
+        const aName = (a.dataset.username || "").toLowerCase();
+        const bName = (b.dataset.username || "").toLowerCase();
+        const aTotal = Number(a.dataset.total || 0);
+        const bTotal = Number(b.dataset.total || 0);
+        const aOnline = Number(a.dataset.online || 0);
+        const bOnline = Number(b.dataset.online || 0);
+        if (mode === "traffic_desc") return bTotal - aTotal || aName.localeCompare(bName);
+        if (mode === "traffic_asc") return aTotal - bTotal || aName.localeCompare(bName);
+        if (mode === "online_first") return bOnline - aOnline || bTotal - aTotal || aName.localeCompare(bName);
+        return aName.localeCompare(bName);
+      }
+
+      function applyUserFilterVisibility(container, state) {
+        if (!container) return;
+        const st = state || getUserFilterState();
+        getCards(container).forEach(function (card) {
+          card.style.display = cardMatchesFilter(card, st.q, st.onlyOnline) ? "" : "none";
+        });
+      }
+
+      function applyUserSort(container, state) {
+        if (!container) return false;
         const cards = getCards(container);
-        if (!cards.length) return;
-        const q = ((searchInput && searchInput.value) || "").trim().toLowerCase();
-        const onlyOnline = onlineOnlyInput && onlineOnlyInput.checked;
-        cards.forEach(function (card) {
-          const uname = (card.dataset.username || "").toLowerCase();
-          const matchQ = !q || uname.includes(q);
-          const online = Number(card.dataset.online || 0) === 1;
-          const matchO = !onlyOnline || online;
-          card.style.display = matchQ && matchO ? "" : "none";
+        if (cards.length < 2) return false;
+        const st = state || getUserFilterState();
+        const sorted = cards.slice().sort(function (a, b) {
+          return compareUserCards(a, b, st.mode);
         });
-        const mode = (sortSelect && sortSelect.value) || "online_first";
-        cards.sort(function (a, b) {
-          const aName = (a.dataset.username || "").toLowerCase();
-          const bName = (b.dataset.username || "").toLowerCase();
-          const aTotal = Number(a.dataset.total || 0);
-          const bTotal = Number(b.dataset.total || 0);
-          const aOnline = Number(a.dataset.online || 0);
-          const bOnline = Number(b.dataset.online || 0);
-          if (mode === "traffic_desc") return bTotal - aTotal || aName.localeCompare(bName);
-          if (mode === "traffic_asc") return aTotal - bTotal || aName.localeCompare(bName);
-          if (mode === "online_first") return bOnline - aOnline || bTotal - aTotal || aName.localeCompare(bName);
-          return aName.localeCompare(bName);
+        let moved = false;
+        for (let i = 0; i < sorted.length; i++) {
+          if (container.children[i] !== sorted[i]) {
+            moved = true;
+            break;
+          }
+        }
+        if (!moved) return false;
+        const scrollY = window.scrollY;
+        const openUsers = new Set(cards.filter(function (c) { return c.open; }).map(function (c) { return c.dataset.username; }));
+        sorted.forEach(function (card, i) {
+          const ref = container.children[i];
+          if (ref !== card) container.insertBefore(card, ref || null);
         });
-        cards.forEach(function (card) { container.appendChild(card); });
+        sorted.forEach(function (card) {
+          if (openUsers.has(card.dataset.username)) card.open = true;
+        });
+        window.scrollTo(window.scrollX, scrollY);
+        return true;
       }
 
-      function applyAllFilters() {
-        applyFilterAndSort(tabActive);
-        applyFilterAndSort(tabDisabled);
+      function applyAllFilters(options) {
+        const opts = options || {};
+        const state = getUserFilterState();
+        applyUserFilterVisibility(tabActive, state);
+        applyUserFilterVisibility(tabDisabled, state);
+        if (opts.sort !== false) {
+          applyUserSort(tabActive, state);
+          applyUserSort(tabDisabled, state);
+        }
       }
 
-      if (searchInput) searchInput.addEventListener("input", applyAllFilters);
-      if (sortSelect) sortSelect.addEventListener("change", applyAllFilters);
-      if (onlineOnlyInput) onlineOnlyInput.addEventListener("change", applyAllFilters);
+      if (searchInput) {
+        searchInput.addEventListener("input", function () { applyAllFilters(); });
+        searchInput.addEventListener("keydown", function (ev) {
+          if (ev.key === "Enter") ev.preventDefault();
+        });
+      }
+      if (sortSelect) sortSelect.addEventListener("change", function () { applyAllFilters(); });
+      if (onlineOnlyInput) onlineOnlyInput.addEventListener("change", function () { applyAllFilters({ sort: false }); });
       applyAllFilters();
 
       const activeDeleteForm = document.getElementById("active-delete-form");
@@ -2897,6 +3077,7 @@
       const metaByUser = {};
       const limitTextByUser = {};
       const limitBarByUser = {};
+      const currentIpByUser = {};
 
       document.querySelectorAll("details.user-card").forEach(function (card) {
         const user = card.dataset.username;
@@ -2917,6 +3098,69 @@
       document.querySelectorAll("[data-user-limit-bar]").forEach(function (el) {
         limitBarByUser[el.getAttribute("data-user-limit-bar")] = el;
       });
+      document.querySelectorAll("[data-user-current-ips]").forEach(function (el) {
+        currentIpByUser[el.getAttribute("data-user-current-ips")] = el;
+      });
+
+      function updateUsersLiveFromApi(users) {
+        const state = getUserFilterState();
+        let sortNeeded = false;
+        Object.keys(users || {}).forEach(function (u) {
+          const info = users[u] || {};
+          const prevOnline = cardByUser[u] ? Number(cardByUser[u].dataset.online || 0) : null;
+          const prevTotal = cardByUser[u] ? Number(cardByUser[u].dataset.total || 0) : null;
+          if (cardByUser[u]) {
+            cardByUser[u].dataset.total = String(info.total || 0);
+            cardByUser[u].dataset.online = info.is_online ? "1" : "0";
+          }
+          if (prevOnline !== null && (prevOnline !== Number(info.is_online ? 1 : 0) || prevTotal !== Number(info.total || 0))) {
+            sortNeeded = true;
+          }
+          if (dotByUser[u]) {
+            const dot = dotByUser[u];
+            dot.classList.remove("online", "offline", "disabled");
+            if (info.is_disabled) {
+              dot.classList.add("disabled");
+              dot.title = "Клиент выключен";
+            } else if (info.is_online) {
+              dot.classList.add("online");
+              dot.title = "Онлайн: " + (info.online_count || 0);
+            } else {
+              dot.classList.add("offline");
+              dot.title = "Оффлайн";
+            }
+          }
+          if (onlineCountBadgeByUser[u]) {
+            const badge = onlineCountBadgeByUser[u];
+            const cnt = Number(info.online_count || 0);
+            if (!info.is_disabled && cnt > 1) {
+              badge.style.display = "inline-block";
+              badge.textContent = "x" + cnt;
+              badge.title = "Одновременных подключений: " + cnt;
+            } else {
+              badge.style.display = "none";
+              badge.textContent = "";
+            }
+          }
+          if (metaByUser[u]) updateUserTrafficMeta(metaByUser[u], info);
+          if (limitTextByUser[u] && info.traffic_limit_bytes > 0) {
+            limitTextByUser[u].textContent = "Остаток: " + (info.traffic_remaining_h || "0 B");
+          }
+          if (limitBarByUser[u] && info.traffic_limit_bytes > 0) {
+            updateLimitBar(limitBarByUser[u], info.traffic_usage_percent || 0);
+          }
+          if (currentIpByUser[u]) {
+            const ips = info.current_ips;
+            currentIpByUser[u].textContent = ips && ips.length ? ips.join(", ") : "нет данных";
+          }
+        });
+        applyUserFilterVisibility(tabActive, state);
+        applyUserFilterVisibility(tabDisabled, state);
+        if (sortNeeded) {
+          applyUserSort(tabActive, state);
+          applyUserSort(tabDisabled, state);
+        }
+      }
 
       function updateLimitBar(bar, percent) {
         const p = Math.max(0, Math.min(100, Number(percent || 0)));
@@ -2938,55 +3182,19 @@
           if (statOnline) statOnline.textContent = (st.online_users || 0) + " юз. / " + (st.online_connections || 0) + " подкл.";
           if (statRateDownload) statRateDownload.textContent = st.rate_download_h != null ? st.rate_download_h : "—";
           if (statRateUpload) statRateUpload.textContent = st.rate_upload_h != null ? st.rate_upload_h : "—";
+          renderStatTipList(statTipDownloadList, st.top_download, "rate_h", "Пока нет активных клиентов");
+          renderStatTipList(statTipUploadList, st.top_upload, "rate_h", "Пока нет активных клиентов");
+          renderStatTipList(statTipRxList, st.top_rx_total, "value_h", "Нет накопленного трафика");
+          renderStatTipList(statTipTxList, st.top_tx_total, "value_h", "Нет накопленного трафика");
+          renderStatTipList(statTipTotalList, st.top_total, "value_h", "Нет накопленного трафика");
+          renderStatTipList(statTipOnlineList, st.top_online, "value_h", "Нет онлайн-клиентов");
           if (gatewayTrafficNote) {
             var note = st.gateway_traffic_note || "";
             gatewayTrafficNote.textContent = note;
             gatewayTrafficNote.style.display = note ? "" : "none";
           }
           const users = data.users || {};
-          Object.keys(users).forEach(function (u) {
-            const info = users[u] || {};
-            if (cardByUser[u]) {
-              cardByUser[u].dataset.total = String(info.total || 0);
-              cardByUser[u].dataset.online = info.is_online ? "1" : "0";
-            }
-            if (dotByUser[u]) {
-              const dot = dotByUser[u];
-              dot.classList.remove("online", "offline", "disabled");
-              if (info.is_disabled) {
-                dot.classList.add("disabled");
-                dot.title = "Клиент выключен";
-              } else if (info.is_online) {
-                dot.classList.add("online");
-                dot.title = "Онлайн: " + (info.online_count || 0);
-              } else {
-                dot.classList.add("offline");
-                dot.title = "Оффлайн";
-              }
-            }
-            if (onlineCountBadgeByUser[u]) {
-              const badge = onlineCountBadgeByUser[u];
-              const cnt = Number(info.online_count || 0);
-              if (!info.is_disabled && cnt > 1) {
-                badge.style.display = "inline-block";
-                badge.textContent = "x" + cnt;
-                badge.title = "Одновременных подключений: " + cnt;
-              } else {
-                badge.style.display = "none";
-                badge.textContent = "";
-              }
-            }
-            if (metaByUser[u]) {
-              updateUserTrafficMeta(metaByUser[u], info);
-            }
-            if (limitTextByUser[u] && info.traffic_limit_bytes > 0) {
-              limitTextByUser[u].textContent = "Остаток: " + (info.traffic_remaining_h || "0 B");
-            }
-            if (limitBarByUser[u] && info.traffic_limit_bytes > 0) {
-              updateLimitBar(limitBarByUser[u], info.traffic_usage_percent || 0);
-            }
-          });
-          applyAllFilters();
+          updateUsersLiveFromApi(users);
         } catch (e) {
           // keep UI functional even if live API temporarily unavailable
         }

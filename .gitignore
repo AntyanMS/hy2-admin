@@ -24,3 +24,4 @@ local-config*.json
 .backup/
 .cursor/
 tmp/
+.local/hy2-admin/
