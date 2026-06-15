@@ -90,6 +90,10 @@ META_PATH = Path("/opt/hy2-admin/data/users_meta.json")
 TRAFFIC_STATE_PATH = Path("/opt/hy2-admin/data/traffic_state.json")
 USER_NOTES_PATH = Path("/opt/hy2-admin/data/user_notes.json")
 USER_IP_STATE_PATH = Path("/opt/hy2-admin/data/user_ip_state.json")
+_user_ip_scan_lock = threading.Lock()
+IP_SCAN_MIN_INTERVAL_SEC = 60
+IP_SCAN_MAX_LOOKBACK_MINUTES = 15
+IP_SCAN_JOURNAL_TIMEOUT_SEC = 5
 DIRECT_EXPLICIT_STORE_PATH = Path("/opt/hy2-admin/data/direct_routing_explicit.json")
 DIRECT_WHITELIST_STORE_PATH = Path("/opt/hy2-admin/data/direct_routing_github_whitelist.json")
 SUB_ADMINS_STORE_PATH = Path("/opt/hy2-admin/data/panel_sub_admins.json")
@@ -3763,74 +3767,10 @@ def extract_ip_from_remote_addr(addr: str) -> str:
         return ""
 
 
-def update_user_ip_observations(stats_users: dict) -> dict:
-    state = load_user_ip_state()
-    users_state = state["users"] if isinstance(state.get("users"), dict) else {}
-    now = datetime.now(timezone.utc)
-    last_scan_at = iso_to_dt(str(state.get("last_scan_at", "")))
-    if last_scan_at is None:
-        since_dt = now - timedelta(days=2)
-    else:
-        since_dt = last_scan_at - timedelta(seconds=2)
-    since_str = since_dt.astimezone().strftime("%Y-%m-%d %H:%M:%S")
-
-    proc = _run_journalctl(
-        ["-u", HY2_SERVICE, "--since", since_str, "--no-pager", "-o", "cat"],
-        capture_output=True,
-        text=True,
-    )
-    if proc.returncode == 0:
-        r1 = re.compile(r'"addr"\s*:\s*"([^"]+)"\s*,\s*"id"\s*:\s*"([^"]+)"')
-        r2 = re.compile(r'"id"\s*:\s*"([^"]+)"\s*,\s*"addr"\s*:\s*"([^"]+)"')
-        for line in proc.stdout.splitlines():
-            m = r1.search(line)
-            if m:
-                addr_raw = m.group(1)
-                user_raw = m.group(2)
-            else:
-                m = r2.search(line)
-                if not m:
-                    continue
-                user_raw = m.group(1)
-                addr_raw = m.group(2)
-            ip = extract_ip_from_remote_addr(addr_raw)
-            if not ip:
-                continue
-            key = str(user_raw).strip().lower()
-            if not key:
-                continue
-            rec = users_state.get(key, {})
-            if not isinstance(rec, dict):
-                rec = {}
-            history = rec.get("history")
-            if not isinstance(history, list):
-                history = []
-            history = [str(x) for x in history if isinstance(x, str)]
-            if ip in history:
-                history.remove(ip)
-            history.append(ip)
-            history = history[-30:]
-
-            events = rec.get("events")
-            if not isinstance(events, list):
-                events = []
-            events = [x for x in events if isinstance(x, dict) and isinstance(x.get("ip"), str) and isinstance(x.get("at"), str)]
-            events.append({"ip": ip, "at": now.isoformat()})
-            events = events[-80:]
-
-            users_state[key] = {
-                "history": history,
-                "events": events,
-                "last_ip": ip,
-                "last_seen_at": now.isoformat(),
-            }
-
-    state["users"] = users_state
-    state["last_scan_at"] = now.isoformat()
-    save_user_ip_state(state)
-
-    out = {}
-    for key, rec in users_state.items():
+def _user_ip_observations_from_state(users_state: dict, stats_users: dict, now: datetime | None = None) -> dict:
+    now = now or datetime.now(timezone.utc)
+    out: dict = {}
+    for key, rec in (users_state or {}).items():
         if not isinstance(rec, dict):
             continue
         history = rec.get("history")
@@ -3865,6 +3805,95 @@ def update_user_ip_observations(stats_users: dict) -> dict:
             "last_seen_at": str(rec.get("last_seen_at", "")),
         }
     return out
+
+
+def update_user_ip_observations(stats_users: dict, *, force: bool = False) -> dict:
+    state = load_user_ip_state()
+    users_state = state["users"] if isinstance(state.get("users"), dict) else {}
+    now = datetime.now(timezone.utc)
+    last_scan_at = iso_to_dt(str(state.get("last_scan_at", "")))
+    if (
+        not force
+        and last_scan_at is not None
+        and (now - last_scan_at).total_seconds() < IP_SCAN_MIN_INTERVAL_SEC
+    ):
+        return _user_ip_observations_from_state(users_state, stats_users, now)
+
+    if not _user_ip_scan_lock.acquire(blocking=False):
+        return _user_ip_observations_from_state(users_state, stats_users, now)
+
+    try:
+        state = load_user_ip_state()
+        users_state = state["users"] if isinstance(state.get("users"), dict) else {}
+        now = datetime.now(timezone.utc)
+        last_scan_at = iso_to_dt(str(state.get("last_scan_at", "")))
+        max_lookback = now - timedelta(minutes=IP_SCAN_MAX_LOOKBACK_MINUTES)
+        if last_scan_at is None:
+            since_dt = max_lookback
+        else:
+            since_dt = max(last_scan_at - timedelta(seconds=2), max_lookback)
+        since_str = since_dt.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+
+        proc = _run_journalctl(
+            ["-u", HY2_SERVICE, "--since", since_str, "--no-pager", "-o", "cat"],
+            capture_output=True,
+            text=True,
+            timeout=IP_SCAN_JOURNAL_TIMEOUT_SEC,
+        )
+        if proc.returncode == 0:
+            r1 = re.compile(r'"addr"\s*:\s*"([^"]+)"\s*,\s*"id"\s*:\s*"([^"]+)"')
+            r2 = re.compile(r'"id"\s*:\s*"([^"]+)"\s*,\s*"addr"\s*:\s*"([^"]+)"')
+            for line in proc.stdout.splitlines():
+                m = r1.search(line)
+                if m:
+                    addr_raw = m.group(1)
+                    user_raw = m.group(2)
+                else:
+                    m = r2.search(line)
+                    if not m:
+                        continue
+                    user_raw = m.group(1)
+                    addr_raw = m.group(2)
+                ip = extract_ip_from_remote_addr(addr_raw)
+                if not ip:
+                    continue
+                key = str(user_raw).strip().lower()
+                if not key:
+                    continue
+                rec = users_state.get(key, {})
+                if not isinstance(rec, dict):
+                    rec = {}
+                history = rec.get("history")
+                if not isinstance(history, list):
+                    history = []
+                history = [str(x) for x in history if isinstance(x, str)]
+                if ip in history:
+                    history.remove(ip)
+                history.append(ip)
+                history = history[-30:]
+
+                events = rec.get("events")
+                if not isinstance(events, list):
+                    events = []
+                events = [x for x in events if isinstance(x, dict) and isinstance(x.get("ip"), str) and isinstance(x.get("at"), str)]
+                events.append({"ip": ip, "at": now.isoformat()})
+                events = events[-80:]
+
+                users_state[key] = {
+                    "history": history,
+                    "events": events,
+                    "last_ip": ip,
+                    "last_seen_at": now.isoformat(),
+                }
+
+        state["users"] = users_state
+        state["last_scan_at"] = now.isoformat()
+        save_user_ip_state(state)
+        return _user_ip_observations_from_state(users_state, stats_users, now)
+    except subprocess.TimeoutExpired:
+        return _user_ip_observations_from_state(users_state, stats_users, now)
+    finally:
+        _user_ip_scan_lock.release()
 
 
 def build_cumulative_stats(traffic: dict, online: dict) -> dict:
@@ -4552,7 +4581,7 @@ def write_config_with_backup_and_restart(cfg: dict) -> None:
     restart_hy2_or_rollback(backup_path)
 
 
-def build_users_view() -> tuple[list[dict], list[dict], dict]:
+def build_users_view(*, refresh_ip_observations: bool = True) -> tuple[list[dict], list[dict], dict]:
     enforce_limits_if_needed()
     cfg = load_hy2_config()
     state = load_user_state()
@@ -4562,10 +4591,20 @@ def build_users_view() -> tuple[list[dict], list[dict], dict]:
     host, port, sni = infer_server_values(cfg)
     stats = get_hy2_stats(cfg)
     stats_users = stats.get("users", {})
-    ip_users = update_user_ip_observations(stats_users)
+    if refresh_ip_observations:
+        ip_users = update_user_ip_observations(stats_users)
+    else:
+        ip_state = load_user_ip_state()
+        users_state = ip_state["users"] if isinstance(ip_state.get("users"), dict) else {}
+        ip_users = _user_ip_observations_from_state(users_state, stats_users)
     active = []
     hidden_ui = hy2_ui_hidden_usernames()
+    disabled_map = state.get("disabled", {})
+    if not isinstance(disabled_map, dict):
+        disabled_map = {}
     for username, password in sorted(cfg["auth"]["userpass"].items()):
+        if username in disabled_map:
+            continue
         if str(username).strip().lower() in hidden_ui:
             continue
         if not user_visible_to_current_session(username):
@@ -4640,7 +4679,6 @@ def build_users_view() -> tuple[list[dict], list[dict], dict]:
         )
 
     disabled = []
-    disabled_map = state.get("disabled", {})
     hidden_ui = hy2_ui_hidden_usernames()
     for username in sorted(disabled_map.keys()):
         if str(username).strip().lower() in hidden_ui:
@@ -6817,7 +6855,7 @@ def api_live_handler():
         }
         return Response(json.dumps(payload, ensure_ascii=False), mimetype="application/json")
 
-    active_users, disabled_users, stats = build_users_view()
+    active_users, disabled_users, stats = build_users_view(refresh_ip_observations=False)
     users = {}
     for u in active_users + disabled_users:
         users[u["username"]] = {

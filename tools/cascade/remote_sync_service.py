@@ -138,6 +138,8 @@ def merge_user_state(current: dict, master: dict, master_usernames: set[str]) ->
     for username in master_usernames:
         if username in mst_dis:
             merged_dis[username] = mst_dis[username]
+        else:
+            merged_dis.pop(username, None)
     out = dict(cur)
     out["disabled"] = merged_dis
     return out

@@ -14,7 +14,8 @@ def _ensure_cwd() -> None:
 def _run_waitress(app: object, host: str, port: int) -> None:
     from waitress import serve
 
-    serve(app, host=host, port=port, threads=8)
+    threads = max(1, min(8, int(os.environ.get("PANEL_WAITRESS_THREADS", "4").strip() or "4")))
+    serve(app, host=host, port=port, threads=threads)
 
 
 def _run_hypercorn_tls(app: object, host: str, port: int, cert: str, key: str) -> None:
